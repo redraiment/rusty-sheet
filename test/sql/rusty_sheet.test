@@ -1,20 +1,20 @@
-# name: test/sql/rusty_quack.test
-# description: test rusty_quack extension
+# name: test/sql/rusty_sheet.test
+# description: test rusty_sheet extension
 # group: [quack]
 
 # Before we load the extension, this will fail
 statement error
-SELECT rusty_quack('Sam');
+SELECT read_sheet('Sam');
 ----
-Catalog Error: Scalar Function with name rusty_quack does not exist!
+Catalog Error: Scalar Function with name rusty_sheet does not exist!
 
 # Require statement will ensure the extension is loaded from now on
-require rusty_quack
+require rusty_sheet
 
 require icu
 
 # Confirm the extension works
 query I
-SELECT * from rusty_quack('Sam');
+SELECT * from read_sheet('Sam');
 ----
 Rusty Quack Sam 🐥
