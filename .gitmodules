@@ -4,4 +4,3 @@
 [submodule "vendors/duckdb-rs"]
 	path = vendors/duckdb-rs
 	url = https://github.com/redraiment/duckdb-rs.git
-	branch = for-rusty-sheet
