@@ -21,6 +21,9 @@ crate-type = ["staticlib"]
 
 [dependencies]
 anyhow = "1.0.98"
-duckdb = { version = "1.3.2", features = ["vtab-loadable"] }
+calamine = { version = "0.29.0", features = ["chrono", "dates"] }
+chrono = "0.4.41"
+duckdb = { path = "vendors/duckdb-rs/crates/duckdb", version = "1.3.2", features = ["vtab-loadable", "bundled"] }
 duckdb-loadable-macros = "0.1.9"
 libduckdb-sys = { version = "1.3.2", features = ["loadable-extension"] }
+thiserror = "2.0.12"
