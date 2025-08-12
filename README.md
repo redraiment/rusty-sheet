@@ -6,11 +6,13 @@ A DuckDB extension that enables reading Excel and OpenDocument spreadsheet files
 
 ## Features
 
+- **High Performance**: Optimized for large files; e.g., reading a 1M-row XLSX file on MacBook M1 now takes under 13 seconds (down from 140+ seconds).
 - **Multiple Format Support**: Read Excel files (`.xls`, `.xlsx`, `.xlsm`, `.xlsb`, `.xla`, `.xlam`) and OpenDocument Spreadsheet files (`.ods`)
-- **Flexible Data Types**: Support for boolean, integer, double, varchar, datetime, date, and time data types
-- **Custom Data Ranges**: Specify exact row and column ranges for data extraction
+- **Flexible Data Types**: Support for boolean, integer, double, varchar, datetime, date, time, and interval (ISO 8601 duration) types
+- **Excel-Style Data Ranges**: Specify data ranges using familiar Excel notation (e.g., `"A1:C3"`)
+- **Automatic Column Type Detection**: Column types are inferred automatically; override specific columns with the `columns` parameter
 - **Header Row Handling**: Automatic detection and parsing of header rows
-- **Error Handling**: Configurable behavior for empty cells and parsing errors
+- **Error Handling**: Configurable behavior for parsing errors with precise cell location reporting
 - **Type Safety**: Built-in data type validation and conversion
 - **Pure Rust Implementation**: No C++ dependencies, leveraging Rust's memory safety
 
@@ -26,18 +28,20 @@ A DuckDB extension that enables reading Excel and OpenDocument spreadsheet files
 
 ### Building from Source
 
-1. Clone the repository with submodules:
+1. Clone the repository:
 ```bash
-git clone --recurse-submodules https://github.com/redraiment/rusty-sheet.git
+git clone https://github.com/redraiment/rusty-sheet.git
 cd rusty-sheet
-```
+````
 
 2. Configure the build environment:
+
 ```bash
 make configure
 ```
 
 3. Build the extension:
+
 ```bash
 make debug    # For development
 make release  # For production
@@ -56,6 +60,7 @@ duckdb -unsigned
 ```
 
 Load the extension:
+
 ```sql
 LOAD './build/debug/extension/rusty-sheet/rusty-sheet.duckdb_extension';
 ```
@@ -63,87 +68,85 @@ LOAD './build/debug/extension/rusty-sheet/rusty-sheet.duckdb_extension';
 ### Basic Examples
 
 #### Read entire spreadsheet with headers
+
 ```sql
 SELECT * FROM read_sheet('data.xlsx');
 ```
 
 #### Read specific worksheet
+
 ```sql
 SELECT * FROM read_sheet('workbook.xlsx', sheet_name='Sheet2');
 ```
 
-#### Define custom column types
+#### Override specific column types (others auto-detected)
+
 ```sql
 SELECT * FROM read_sheet('data.xlsx',
-  fields=[
-    ['id', 'bigint'],
-    ['name', 'varchar'], 
-    ['score', 'double'],
-    ['created_at', 'datetime']
-  ]
+  columns={'id': 'bigint'}
 );
 ```
 
-#### Read specific data range
+#### Read specific data range (Excel-style notation)
+
 ```sql
-SELECT * FROM read_sheet('data.xlsx',
-  start_row=2,
-  end_row=100,
-  start_column=1,
-  end_column=5
-);
+SELECT * FROM read_sheet('data.xlsx', range='A2:E100');
 ```
 
 #### Read without headers
+
 ```sql
 SELECT * FROM read_sheet('data.xlsx',
   header=false,
-  fields=[['col1', 'varchar'], ['col2', 'bigint']]
+  columns={'column1': 'varchar', 'column2': 'bigint'}
 );
+```
+
+### Analyze column types without reading full data
+
+```sql
+SELECT * FROM analyze_sheet('data.xlsx', analyze_rows=20);
 ```
 
 ## Parameters
 
 ### Positional Parameters
-- `file_path` (required): Path to the spreadsheet file
+
+* `file_path` (required): Path to the spreadsheet file
 
 ### Named Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `sheet_name` | VARCHAR | First sheet | Name of the worksheet to read |
-| `header` | BOOLEAN | `true` | Whether first row contains column headers |
-| `fields` | LIST | Auto-detect | Column definitions as `[['name', 'type'], ...]` |
-| `start_row` | INTEGER | 0 | Starting row index (inclusive, zero-based) |
-| `start_column` | INTEGER | 0 | Starting column index (inclusive, zero-based) |
-| `end_row` | INTEGER | Last row | Ending row index (inclusive) |
-| `end_column` | INTEGER | Last column | Ending column index (inclusive) |
-| `empty_as_null` | BOOLEAN | `false` | Convert empty cells to NULL instead of empty strings |
-| `error_as_null` | BOOLEAN | `false` | Convert parsing errors to NULL instead of failing |
+| Parameter       | Type    | Default     | Description                                                     |
+| --------------- | ------- | ----------- | --------------------------------------------------------------- |
+| `sheet_name`    | VARCHAR | First sheet | Name of the worksheet to read                                   |
+| `header`        | BOOLEAN | `true`      | Whether first row contains column headers                       |
+| `columns`       | MAP     | `{}`        | Partial column type overrides, e.g., `{'id': 'bigint'}`         |
+| `range`         | VARCHAR | Full sheet  | Data range in Excel format, e.g., `"A1:C3"`                     |
+| `error_as_null` | BOOLEAN | `false`     | Convert parsing errors to NULL instead of failing               |
+| `analyze_rows`  | INTEGER | `10`        | Number of rows to analyze for type inference                    |
 
 ### Supported Data Types
 
-| Type | DuckDB Type | Description |
-|------|-------------|-------------|
-| `boolean` | BOOLEAN | True/false values |
-| `bigint` | BIGINT | 64-bit signed integers |
-| `double` | DOUBLE | Double-precision floating point |
-| `varchar` | VARCHAR | Variable-length strings |
-| `datetime` | TIMESTAMP | Date and time with microsecond precision |
-| `date` | DATE | Date without time component |
-| `time` | TIME | Time without date component |
+| Type       | DuckDB Type | Description                                  |
+| ---------- | ----------- | -------------------------------------------- |
+| `boolean`  | BOOLEAN     | True/false values                            |
+| `bigint`   | BIGINT      | 64-bit signed integers                       |
+| `double`   | DOUBLE      | Double-precision floating point              |
+| `varchar`  | VARCHAR     | Variable-length strings                      |
+| `datetime` | TIMESTAMP   | Date and time with microsecond precision     |
+| `date`     | DATE        | Date without time component                  |
+| `time`     | TIME        | Time without date component                  |
+| `interval` | INTERVAL    | Time intervals, including ISO 8601 durations |
 
 ## Advanced Usage
 
 ### Error Handling
 
 Handle parsing errors gracefully:
+
 ```sql
 -- Convert errors to NULL values
-SELECT * FROM read_sheet('messy_data.xlsx', 
-  error_as_null=true,
-  empty_as_null=true
-);
+SELECT * FROM read_sheet('messy_data.xlsx', error_as_null=true);
 ```
 
 ### Working with Multiple Sheets
@@ -167,27 +170,14 @@ SELECT
   COUNT(*) as total_records,
   AVG(score) as avg_score,
   MAX(created_at) as latest_entry
-FROM read_sheet('student_data.xlsx',
-  fields=[
-    ['student_id', 'bigint'],
-    ['name', 'varchar'],
-    ['score', 'double'], 
-    ['created_at', 'datetime']
-  ]
-);
+FROM read_sheet('student_data.xlsx');
 
 -- Filter and aggregate data
 SELECT 
   department,
   COUNT(*) as employee_count,
   AVG(salary) as avg_salary
-FROM read_sheet('hr_data.xlsx',
-  fields=[
-    ['name', 'varchar'],
-    ['department', 'varchar'],
-    ['salary', 'double']
-  ]
-)
+FROM read_sheet('hr_data.xlsx')
 WHERE salary > 50000
 GROUP BY department
 ORDER BY avg_salary DESC;
@@ -218,9 +208,9 @@ make test_debug
 
 This extension is built using the DuckDB Rust extension framework. The main components are:
 
-- `src/lib.rs`: Main extension implementation
-- `test/sql/`: SQL test files
-- `Cargo.toml`: Rust dependencies and build configuration
+* `src/lib.rs`: Main extension implementation
+* `test/sql/`: SQL test files
+* `Cargo.toml`: Rust dependencies and build configuration
 
 To contribute:
 
@@ -232,14 +222,14 @@ To contribute:
 
 ## Known Issues
 
-- On Windows with Python 3.11, you may encounter extension loading issues. Use Python 3.12 or later.
-- Very large spreadsheets may require significant memory allocation.
-- Complex Excel formulas are not evaluated; only the computed values are read.
+* On Windows with Python 3.11, you may encounter extension loading issues. Use Python 3.12 or later.
+* Very large spreadsheets may require significant memory allocation.
+* Complex Excel formulas are not evaluated; only the computed values are read.
 
 ## Author
 
-**Zhang, Zepeng**  
-Email: redraiment@gmail.com
+**Zhang, Zepeng**
+Email: [redraiment@gmail.com](mailto:redraiment@gmail.com)
 
 ## License
 
@@ -247,6 +237,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgments
 
-- Built on the [DuckDB Rust extension template](https://github.com/duckdb/duckdb-rs)
-- Uses the [calamine](https://crates.io/crates/calamine) crate for spreadsheet parsing
-- Inspired by DuckDB's commitment to making data analysis more accessible
+* Built on the [DuckDB Rust extension template](https://github.com/duckdb/duckdb-rs)
+* Uses the [calamine](https://crates.io/crates/calamine) crate for spreadsheet parsing
+* Inspired by DuckDB's commitment to making data analysis more accessible
