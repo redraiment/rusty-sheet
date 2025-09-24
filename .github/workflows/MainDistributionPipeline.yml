@@ -15,11 +15,10 @@ concurrency:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: redraiment/extension-ci-tools/.github/workflows/_extension_distribution.yml@735a214d5ef418bff17edef7fcb8b45b26dc2d25
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.0
     with:
-      duckdb_version: v1.3.2
-      ci_tools_version: "735a214d5ef418bff17edef7fcb8b45b26dc2d25"
-      override_ci_tools_repository: "redraiment/extension-ci-tools"
-      extension_name: rusty_sheet
+      duckdb_version: v1.4.0
+      ci_tools_version: v1.4.0
+      extension_name: rusty_quack
       extra_toolchains: rust;python3
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl'
