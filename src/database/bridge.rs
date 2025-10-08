@@ -1,171 +1,167 @@
 use duckdb::vtab::Value;
-use libduckdb_sys::{
-    duckdb_date, duckdb_free, duckdb_get_bool, duckdb_get_date, duckdb_get_double,
-    duckdb_get_float, duckdb_get_int16, duckdb_get_int32, duckdb_get_int64, duckdb_get_int8,
-    duckdb_get_interval, duckdb_get_list_child, duckdb_get_list_size, duckdb_get_map_key,
-    duckdb_get_map_size, duckdb_get_map_value, duckdb_get_struct_child, duckdb_get_time,
-    duckdb_get_time_tz, duckdb_get_timestamp, duckdb_get_timestamp_ms, duckdb_get_timestamp_ns,
-    duckdb_get_timestamp_s, duckdb_get_timestamp_tz, duckdb_get_uint16, duckdb_get_uint32,
-    duckdb_get_uint64, duckdb_get_uint8, duckdb_get_value_type, duckdb_get_varchar,
-    duckdb_interval, duckdb_logical_type, duckdb_struct_type_child_count,
-    duckdb_struct_type_child_name, duckdb_time, duckdb_time_tz, duckdb_timestamp,
-    duckdb_timestamp_ms, duckdb_timestamp_ns, duckdb_timestamp_s, duckdb_value,
-};
-use std::{ffi::CStr, os::raw::c_void};
+use libduckdb_sys::duckdb_date;
+use libduckdb_sys::duckdb_free;
+use libduckdb_sys::duckdb_get_bool;
+use libduckdb_sys::duckdb_get_date;
+use libduckdb_sys::duckdb_get_double;
+use libduckdb_sys::duckdb_get_float;
+use libduckdb_sys::duckdb_get_int16;
+use libduckdb_sys::duckdb_get_int32;
+use libduckdb_sys::duckdb_get_int64;
+use libduckdb_sys::duckdb_get_int8;
+use libduckdb_sys::duckdb_get_interval;
+use libduckdb_sys::duckdb_get_list_child;
+use libduckdb_sys::duckdb_get_list_size;
+use libduckdb_sys::duckdb_get_map_key;
+use libduckdb_sys::duckdb_get_map_size;
+use libduckdb_sys::duckdb_get_map_value;
+use libduckdb_sys::duckdb_get_struct_child;
+use libduckdb_sys::duckdb_get_time;
+use libduckdb_sys::duckdb_get_time_tz;
+use libduckdb_sys::duckdb_get_timestamp;
+use libduckdb_sys::duckdb_get_timestamp_ms;
+use libduckdb_sys::duckdb_get_timestamp_ns;
+use libduckdb_sys::duckdb_get_timestamp_s;
+use libduckdb_sys::duckdb_get_timestamp_tz;
+use libduckdb_sys::duckdb_get_uint16;
+use libduckdb_sys::duckdb_get_uint32;
+use libduckdb_sys::duckdb_get_uint64;
+use libduckdb_sys::duckdb_get_uint8;
+use libduckdb_sys::duckdb_get_value_type;
+use libduckdb_sys::duckdb_get_varchar;
+use libduckdb_sys::duckdb_interval;
+use libduckdb_sys::duckdb_logical_type;
+use libduckdb_sys::duckdb_struct_type_child_count;
+use libduckdb_sys::duckdb_struct_type_child_name;
+use libduckdb_sys::duckdb_time;
+use libduckdb_sys::duckdb_time_tz;
+use libduckdb_sys::duckdb_timestamp;
+use libduckdb_sys::duckdb_timestamp_ms;
+use libduckdb_sys::duckdb_timestamp_ns;
+use libduckdb_sys::duckdb_timestamp_s;
+use libduckdb_sys::duckdb_value;
+use std::ffi::CStr;
+use std::os::raw::c_void;
 
-/// A bridge trait that extends the functionality of DuckDB's `Value` type by providing
-/// unsafe access to its internal raw pointer and additional type conversion methods.
-///
-/// # Safety Warning
-///
-/// This trait contains inherently unsafe operations that bypass Rust's memory safety
-/// guarantees. Use with extreme caution and only when you fully understand the risks.
 #[allow(dead_code)]
 pub(crate) trait ValueBridge {
-    /// Extracts the raw `duckdb_value` pointer from the `Value` struct.
+    /// Gets the raw pointer to the underlying DuckDB value
     ///
     /// # Safety
-    ///
-    /// This function is **EXTREMELY DANGEROUS** and **HIGHLY UNSTABLE** because:
-    ///
-    /// - **Memory Layout Dependency**: Relies on the exact internal memory layout of the
-    ///   `Value` struct, which is an implementation detail that can change without notice
-    /// - **Version Fragility**: Any update to duckdb-rs that modifies the `Value` struct
-    ///   will cause this function to produce undefined behavior
-    /// - **No ABI Guarantees**: The internal structure of `Value` is not part of the
-    ///   public API and has no stability guarantees
-    /// - **Potential Memory Corruption**: Incorrect usage can lead to segfaults, data
-    ///   corruption, or other undefined behavior
-    /// - **Compiler Optimization Issues**: Future compiler optimizations might break
-    ///   the assumptions this code makes about memory layout
-    ///
-    /// # When This Breaks
-    ///
-    /// This function will break and cause undefined behavior if:
-    /// - duckdb-rs changes the internal layout of `Value`
-    /// - Additional fields are added to the `Value` struct
-    /// - The struct alignment or padding changes
-    /// - You're using a different version of duckdb-rs than this was tested with
-    ///
-    /// # Requirements for Safe Usage
-    ///
-    /// - Verify that `std::mem::size_of::<Value>() == std::mem::size_of::<duckdb_value>()`
-    /// - Test thoroughly with your specific version of duckdb-rs
-    /// - Add version-specific conditional compilation if needed
-    /// - Always handle the possibility that the returned pointer is invalid
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use your_crate::ValueBridge;
-    ///
-    /// let value: Value = /* ... */;
-    /// let raw_ptr = unsafe { value.get_value_ptr() };
-    /// // raw_ptr may be completely invalid - handle with care!
-    /// ```
+    /// This method is unsafe as it accesses raw pointers and makes assumptions
+    /// about the internal memory layout of DuckDB values
     unsafe fn get_value_ptr(&self) -> duckdb_value;
 
-    /// Returns the value as a boolean
+    /// Converts the value to a boolean
     fn to_bool(&self) -> bool {
         unsafe { duckdb_get_bool(self.get_value_ptr()) }
     }
 
-    /// Returns the value as an i8
+    /// Converts the value to a signed 8-bit integer
     fn to_int8(&self) -> i8 {
         unsafe { duckdb_get_int8(self.get_value_ptr()) }
     }
 
-    /// Returns the value as an u8
+    /// Converts the value to an unsigned 8-bit integer
     fn to_uint8(&self) -> u8 {
         unsafe { duckdb_get_uint8(self.get_value_ptr()) }
     }
 
-    /// Returns the value as an i16
+    /// Converts the value to a signed 16-bit integer
     fn to_int16(&self) -> i16 {
         unsafe { duckdb_get_int16(self.get_value_ptr()) }
     }
 
-    /// Returns the value as an u16
+    /// Converts the value to an unsigned 16-bit integer
     fn to_uint16(&self) -> u16 {
         unsafe { duckdb_get_uint16(self.get_value_ptr()) }
     }
 
-    /// Returns the value as an i32
+    /// Converts the value to a signed 32-bit integer
     fn to_int32(&self) -> i32 {
         unsafe { duckdb_get_int32(self.get_value_ptr()) }
     }
 
-    /// Returns the value as an u32
+    /// Converts the value to an unsigned 32-bit integer
     fn to_uint32(&self) -> u32 {
         unsafe { duckdb_get_uint32(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a int64
+    /// Converts the value to a usize (platform-dependent size)
+    ///
+    /// This is a convenience method that converts via u32
+    fn to_usize(&self) -> usize {
+        self.to_uint32() as usize
+    }
+
+    /// Converts the value to a signed 64-bit integer
     fn to_int64(&self) -> i64 {
         unsafe { duckdb_get_int64(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a int64
+    /// Converts the value to an unsigned 64-bit integer
     fn to_uint64(&self) -> u64 {
         unsafe { duckdb_get_uint64(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a float
+    /// Converts the value to a 32-bit floating point number
     fn to_float(&self) -> f32 {
         unsafe { duckdb_get_float(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a double
+    /// Converts the value to a 64-bit floating point number
     fn to_double(&self) -> f64 {
         unsafe { duckdb_get_double(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a date
+    /// Converts the value to a DuckDB date structure
     fn to_date(&self) -> duckdb_date {
         unsafe { duckdb_get_date(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a time
+    /// Converts the value to a DuckDB time structure
     fn to_time(&self) -> duckdb_time {
         unsafe { duckdb_get_time(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a time_tz
+    /// Converts the value to a DuckDB time with timezone structure
     fn to_time_tz(&self) -> duckdb_time_tz {
         unsafe { duckdb_get_time_tz(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a timestamp
+    /// Converts the value to a DuckDB timestamp structure
     fn to_timestamp(&self) -> duckdb_timestamp {
         unsafe { duckdb_get_timestamp(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a timestamp_tz
+    /// Converts the value to a DuckDB timestamp with timezone structure
     fn to_timestamp_tz(&self) -> duckdb_timestamp {
         unsafe { duckdb_get_timestamp_tz(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a timestamp_s
+    /// Converts the value to a DuckDB timestamp in seconds
     fn to_timestamp_s(&self) -> duckdb_timestamp_s {
         unsafe { duckdb_get_timestamp_s(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a timestamp_ms
+    /// Converts the value to a DuckDB timestamp in milliseconds
     fn to_timestamp_ms(&self) -> duckdb_timestamp_ms {
         unsafe { duckdb_get_timestamp_ms(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a timestamp_ns
+    /// Converts the value to a DuckDB timestamp in nanoseconds
     fn to_timestamp_ns(&self) -> duckdb_timestamp_ns {
         unsafe { duckdb_get_timestamp_ns(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a interval
+    /// Converts the value to a DuckDB interval structure
     fn to_interval(&self) -> duckdb_interval {
         unsafe { duckdb_get_interval(self.get_value_ptr()) }
     }
 
-    /// Returns the value as a String
+    /// Converts the value to a UTF-8 string
+    ///
+    /// The returned string is owned and memory is properly managed
     fn to_varchar(&self) -> String {
         unsafe {
             let varchar = duckdb_get_varchar(self.get_value_ptr());
@@ -176,7 +172,7 @@ pub(crate) trait ValueBridge {
         }
     }
 
-    /// Returns the value as a list
+    /// Converts the value to a vector of DuckDB values (list type)
     fn to_list(&self) -> Vec<Value> {
         unsafe {
             let size = duckdb_get_list_size(self.get_value_ptr());
@@ -186,7 +182,7 @@ pub(crate) trait ValueBridge {
         }
     }
 
-    /// Returns the value as a map key & value entries
+    /// Converts the value to a vector of key-value pairs (map type)
     fn to_map_entries(&self) -> Vec<(Value, Value)> {
         unsafe {
             let size = duckdb_get_map_size(self.get_value_ptr());
@@ -201,7 +197,7 @@ pub(crate) trait ValueBridge {
         }
     }
 
-    /// Returns the value as a struct type child names and values
+    /// Converts the value to a vector of field name-value pairs (struct type)
     fn to_struct_properties(&self) -> Vec<(String, Value)> {
         let value_type = self.value_type();
         unsafe {
@@ -221,7 +217,7 @@ pub(crate) trait ValueBridge {
         }
     }
 
-    /// Returns the value logical type
+    /// Returns the logical type of the value
     fn value_type(&self) -> duckdb_logical_type {
         unsafe { duckdb_get_value_type(self.get_value_ptr()) }
     }
@@ -239,7 +235,7 @@ impl ValueBridge for Value {
     /// - Different target architectures
     /// - Debug vs release builds
     ///
-    /// **DO NOT USE IN DIRECTLY**
+    /// **DO NOT USE DIRECTLY**
     unsafe fn get_value_ptr(&self) -> duckdb_value {
         // Cast the Value reference to a raw pointer, then reinterpret it as duckdb_value
         // This is a dangerous assumption about the internal memory layout

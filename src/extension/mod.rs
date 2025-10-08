@@ -1,91 +1,104 @@
-//! # Extension Core Module
-//!
-//! This module provides the core functionality for the DuckDB spreadsheet extension,
-//! including parameter handling, error types, and sheet parsing utilities.
-use crate::bridge::ValueBridge;
-use crate::extension::ExtensionError::InvalidParameter;
-use crate::spreadsheet::{
-    CellKind, Sheet, Spreadsheet, SpreadsheetError, SpreadsheetError::SheetNotFound,
-};
-use anyhow::Result;
-use duckdb::core::{LogicalTypeHandle, LogicalTypeId};
+//! Extension module containing DuckDB table function implementations.
+//! Provides functions for reading and analyzing spreadsheet files.
+
+pub(crate) mod analyze_sheet;
+pub(crate) mod analyze_sheets;
+pub(crate) mod read_sheet;
+pub(crate) mod read_sheets;
+mod writer;
+
+use crate::database::bridge::ValueBridge;
+use crate::database::column::ColumnType;
+use crate::database::range::Range;
+use crate::error::RustySheetError;
+use duckdb::core::LogicalTypeHandle;
+use duckdb::core::LogicalTypeId;
 use duckdb::vtab::BindInfo;
-use regex::Regex;
-use std::collections::HashMap;
-use std::path::Path;
+use duckdb::vtab::Value;
+use glob::glob;
+use glob::Pattern;
 use thiserror::Error;
 
-pub(crate) mod analyze_sheet_table_function;
-pub(crate) mod read_sheet_table_function;
-
-/// Custom error types for the extension operations.
-///
-/// This enum represents all possible errors that can occur during extension
-/// operations, providing structured error handling with context information.
+/// Errors specific to extension parameter processing and validation.
 #[derive(Error, Debug)]
-pub enum ExtensionError {
-    /// Error occurred while reading or processing spreadsheet data
-    #[error("Read spreadsheet failed: {0}")]
-    SpreadsheetError(#[from] SpreadsheetError),
+pub(crate) enum ExtensionError {
+    #[error("No files matched wildcard '{0}'")]
+    FileWildcardError(String),
 
-    /// Invalid parameter provided to a table function
-    #[error("Invalid parameter '{name}': {message}")]
-    InvalidParameter { name: String, message: String },
+    #[error("Spreadsheet '{0}': no sheets matched wildcard '{1}'")]
+    SheetWildcardError(String, String),
 }
 
-// Named parameter handling traits and implementations
+/// Trait for reading positional parameters from DuckDB bind info.
+pub(crate) trait Param<T> {
+    /// Reads a positional parameter at the specified index.
+    fn read(bind: &BindInfo, index: u64) -> Result<T, RustySheetError>;
+}
 
-/// Trait for handling named parameters in DuckDB table functions.
-///
-/// This trait provides a standardized way to define, validate, and extract
-/// named parameters from DuckDB bind information.
-///
-/// # Type Parameters
-///
-/// * `T` - The type of the parameter value
-pub trait NamedParam<T> {
-    /// Returns the parameter name as used in SQL
+/// Trait for reading named parameters from DuckDB bind info.
+pub(crate) trait NamedParam<T> {
+    /// Returns the parameter name as used in SQL queries.
     fn name() -> &'static str;
 
-    /// Returns the DuckDB logical type for this parameter
+    /// Returns the DuckDB logical type for this parameter.
     fn kind() -> LogicalTypeHandle;
 
-    /// Returns the complete parameter definition (name and type)
+    /// Returns the parameter definition tuple (name, type) for DuckDB registration.
     fn definition() -> (String, LogicalTypeHandle) {
         (Self::name().to_string(), Self::kind())
     }
 
-    /// Extracts the parameter value from bind information
-    ///
-    /// # Arguments
-    ///
-    /// * `bind` - The DuckDB bind information containing parameter values
-    ///
-    /// # Returns
-    ///
-    /// * `Option<T>` - The parameter value if present, None if not provided
-    fn read(bind: &BindInfo) -> Option<T>;
+    /// Reads the named parameter from bind info, returning None if not provided.
+    fn read(bind: &BindInfo) -> Result<Option<T>, RustySheetError> {
+        if let Some(value) = bind.get_named_parameter(Self::name()) {
+            let value = Self::cast(value)?;
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Converts a DuckDB Value to the parameter's target type.
+    fn cast(value: Value) -> Result<T, RustySheetError>;
 }
 
-/// Sheet name parameter handler
+struct FileNameParam;
+struct FilesParam;
 struct SheetNameParam;
-
-/// Range parameter handler  
+struct SheetsParam;
 struct RangeParam;
-
-/// Header parameter handler
 struct HeaderParam;
-
-/// Columns parameter handler
 struct ColumnsParam;
-
-/// Analyze rows parameter handler
 struct AnalyzeRowsParam;
-
-/// Error as null parameter handler
 struct ErrorAsNullParam;
+struct SkipEmptyRowsParam;
+struct EndAtEmptyRowParam;
 
-impl NamedParam<String> for SheetNameParam {
+/// Parameter handler for file name (positional parameter).
+impl Param<String> for FileNameParam {
+    fn read(bind: &BindInfo, index: u64) -> Result<String, RustySheetError> {
+        let value = bind.get_parameter(index);
+        Ok(value.to_string())
+    }
+}
+
+/// Parameter handler for file patterns with glob expansion.
+impl Param<Vec<String>> for FilesParam {
+    fn read(bind: &BindInfo, index: u64) -> Result<Vec<String>, RustySheetError> {
+        let wildcard = bind.get_parameter(index).to_string();
+        let files = glob(&wildcard)?
+            .filter_map(Result::ok)
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        if files.is_empty() {
+            Err(ExtensionError::FileWildcardError(wildcard))?
+        }
+        Ok(files)
+    }
+}
+
+/// Parameter handler for sheet name pattern matching.
+impl NamedParam<Pattern> for SheetNameParam {
     fn name() -> &'static str {
         "sheet_name"
     }
@@ -94,115 +107,34 @@ impl NamedParam<String> for SheetNameParam {
         LogicalTypeHandle::from(LogicalTypeId::Varchar)
     }
 
-    fn read(bind: &BindInfo) -> Option<String> {
-        Some(bind.get_named_parameter(Self::name())?.to_varchar())
+    fn cast(value: Value) -> Result<Pattern, RustySheetError> {
+        let sheet_name = value.to_string();
+        let pattern = Pattern::new(&sheet_name)?;
+        Ok(pattern)
     }
 }
 
-/// Represents a cell range within a spreadsheet.
-///
-/// A range can specify partial boundaries - any bound can be None to indicate
-/// no constraint in that direction. This allows for flexible range specifications
-/// like "A1:", "B:D", ":10", etc.
-pub struct Range {
-    /// Starting row number (1-based, inclusive)
-    pub row_lower_bound: Option<usize>,
-    /// Ending row number (1-based, inclusive)  
-    pub row_upper_bound: Option<usize>,
-    /// Starting column number (1-based, inclusive)
-    pub column_lower_bound: Option<usize>,
-    /// Ending column number (1-based, inclusive)
-    pub column_upper_bound: Option<usize>,
-}
-
-impl Range {
-    /// Parses column letters to column numbers.
-    ///
-    /// Converts Excel-style column letters to 1-based column numbers:
-    /// A = 1, B = 2, ..., Z = 26, AA = 27, AB = 28, ..., AZ = 52, BA = 53, ...
-    ///
-    /// # Arguments
-    ///
-    /// * `letters` - The column letters (case-insensitive)
-    ///
-    /// # Returns
-    ///
-    /// * `Option<usize>` - The 1-based column number, None if parsing fails
-    fn parse_column(letters: &str) -> Option<usize> {
-        letters
-            .to_ascii_uppercase()
-            .chars()
-            .map(|index| index as usize - 'A' as usize + 1)
-            .reduce(|index, digit| index * 26 + digit)
-            .map(|column| column - 1)
+/// Parameter handler for multiple sheet specifications with file filtering.
+impl NamedParam<Vec<(Option<Pattern>, Pattern)>> for SheetsParam {
+    fn name() -> &'static str {
+        "sheets"
     }
 
-    /// Parses row number string to usize.
-    ///
-    /// # Arguments
-    ///
-    /// * `number` - The row number as string
-    ///
-    /// # Returns
-    ///
-    /// * `Option<usize>` - The row number, None if parsing fails
-    fn parse_row(number: &str) -> Option<usize> {
-        number
-            .parse()
-            .ok()
-            .filter(|row| *row > 0)
-            .map(|row: usize| row - 1)
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar))
+    }
+
+    fn cast(value: Value) -> Result<Vec<(Option<Pattern>, Pattern)>, RustySheetError> {
+        value
+            .to_list()
+            .iter()
+            .map(Value::to_string)
+            .map(parse_sheet)
+            .collect()
     }
 }
 
-impl TryFrom<&str> for Range {
-    type Error = ExtensionError;
-
-    /// Parses a range string into a Range struct.
-    ///
-    /// Supports various range formats:
-    /// - "A1:C3" - Full range from A1 to C3
-    /// - "A1:" - From A1 to end of data
-    /// - ":C3" - From beginning to C3  
-    /// - "A:C" - All rows in columns A to C
-    /// - "1:3" - Rows 1 to 3, all columns
-    /// - "A1" - Single cell A1
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - The range string to parse
-    ///
-    /// # Returns
-    ///
-    /// * `Result<Self, Self::Error>` - The parsed Range or an error
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let pattern =
-            Regex::new(r"^([A-Z]*)(\d*)(:([A-Z]*)(\d*))?$").expect("Hardcode regex pattern");
-        let captures = pattern.captures(value).ok_or(InvalidParameter {
-            name: RangeParam::name().to_string(),
-            message: format!("'{value}' is not a data range"),
-        })?;
-        Ok(Range {
-            column_lower_bound: captures
-                .get(1)
-                .map(|matcher| matcher.as_str())
-                .and_then(Self::parse_column),
-            row_lower_bound: captures
-                .get(2)
-                .map(|matcher| matcher.as_str())
-                .and_then(Self::parse_row),
-            column_upper_bound: captures
-                .get(4)
-                .map(|matcher| matcher.as_str())
-                .and_then(Self::parse_column),
-            row_upper_bound: captures
-                .get(5)
-                .map(|matcher| matcher.as_str())
-                .and_then(Self::parse_row),
-        })
-    }
-}
-
+/// Parameter handler for Excel-style range specifications.
 impl NamedParam<Range> for RangeParam {
     fn name() -> &'static str {
         "range"
@@ -212,12 +144,12 @@ impl NamedParam<Range> for RangeParam {
         LogicalTypeHandle::from(LogicalTypeId::Varchar)
     }
 
-    fn read(bind: &BindInfo) -> Option<Range> {
-        let parameter = bind.get_named_parameter(Self::name())?.to_varchar();
-        Range::try_from(parameter.as_str()).ok()
+    fn cast(value: Value) -> Result<Range, RustySheetError> {
+        Range::try_from(value.to_varchar().as_str())
     }
 }
 
+/// Parameter handler for header row presence flag.
 impl NamedParam<bool> for HeaderParam {
     fn name() -> &'static str {
         "header"
@@ -227,12 +159,13 @@ impl NamedParam<bool> for HeaderParam {
         LogicalTypeHandle::from(LogicalTypeId::Boolean)
     }
 
-    fn read(bind: &BindInfo) -> Option<bool> {
-        Some(bind.get_named_parameter(Self::name())?.to_bool())
+    fn cast(value: Value) -> Result<bool, RustySheetError> {
+        Ok(value.to_bool())
     }
 }
 
-impl NamedParam<HashMap<String, CellKind>> for ColumnsParam {
+/// Parameter handler for column type overrides.
+impl NamedParam<Vec<(Pattern, ColumnType)>> for ColumnsParam {
     fn name() -> &'static str {
         "columns"
     }
@@ -244,23 +177,17 @@ impl NamedParam<HashMap<String, CellKind>> for ColumnsParam {
         )
     }
 
-    fn read(bind: &BindInfo) -> Option<HashMap<String, CellKind>> {
-        Some(
-            bind.get_named_parameter(Self::name())?
-                .to_map_entries()
-                .iter()
-                .map(|(key, value)| {
-                    let name = key.to_string();
-                    let value = value.to_string();
-                    let kind = CellKind::parse(value.as_str())
-                        .expect(&format!("Unknown cell kind '{value}'"));
-                    (name, kind)
-                })
-                .collect(),
-        )
+    fn cast(value: Value) -> Result<Vec<(Pattern, ColumnType)>, RustySheetError> {
+        let columns = value
+            .to_map_entries()
+            .iter()
+            .map(|(key, value)| parse_column(key, value))
+            .collect::<Result<Vec<(Pattern, ColumnType)>, RustySheetError>>()?;
+        Ok(columns)
     }
 }
 
+/// Parameter handler for number of rows to analyze for type detection.
 impl NamedParam<usize> for AnalyzeRowsParam {
     fn name() -> &'static str {
         "analyze_rows"
@@ -270,11 +197,12 @@ impl NamedParam<usize> for AnalyzeRowsParam {
         LogicalTypeHandle::from(LogicalTypeId::UInteger)
     }
 
-    fn read(bind: &BindInfo) -> Option<usize> {
-        Some(bind.get_named_parameter(Self::name())?.to_uint32() as usize)
+    fn cast(value: Value) -> Result<usize, RustySheetError> {
+        Ok(value.to_usize())
     }
 }
 
+/// Parameter handler for error handling behavior (fail-fast vs null conversion).
 impl NamedParam<bool> for ErrorAsNullParam {
     fn name() -> &'static str {
         "error_as_null"
@@ -284,65 +212,58 @@ impl NamedParam<bool> for ErrorAsNullParam {
         LogicalTypeHandle::from(LogicalTypeId::Boolean)
     }
 
-    fn read(bind: &BindInfo) -> Option<bool> {
-        Some(bind.get_named_parameter(Self::name())?.to_bool())
+    fn cast(value: Value) -> Result<bool, RustySheetError> {
+        Ok(value.to_bool())
     }
 }
 
-// Sheet parsing utilities
-
-/// Opens and configures a spreadsheet sheet with the given parameters.
-///
-/// This utility function handles the common workflow of:
-/// 1. Opening a spreadsheet file
-/// 2. Selecting the appropriate sheet
-/// 3. Configuring range boundaries
-/// 4. Setting header options
-///
-/// # Arguments
-///
-/// * `file_name` - Path to the spreadsheet file
-/// * `sheet_name` - Optional sheet name (uses first sheet if None)
-/// * `range` - Optional range to constrain data reading
-/// * `header` - Optional header flag (defaults to true if None)
-///
-/// # Returns
-///
-/// * `Result<Sheet, ExtensionError>` - The configured sheet or an error
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The file cannot be opened or read
-/// - The specified sheet is not found
-/// - The file format is not supported
-pub fn open_sheet(
-    file_name: &str,
-    sheet_name: &Option<String>,
-    range: &Option<Range>,
-    header: &Option<bool>,
-) -> Result<Sheet, ExtensionError> {
-    let mut spreadsheet = Spreadsheet::open(Path::new(file_name))?;
-    let sheet_name = sheet_name
-        .to_owned()
-        .or_else(|| spreadsheet.sheet_name_at(0))
-        .ok_or(SheetNotFound)?;
-    let mut sheet = spreadsheet.open_sheet(sheet_name.as_str(), header.unwrap_or(true))?;
-
-    // Apply range constraints if specified
-    if let Some(range) = range {
-        if let Some(column_lower_bound) = range.column_lower_bound {
-            sheet.column_lower_bound = column_lower_bound;
-        }
-        if let Some(row_lower_bound) = range.row_lower_bound {
-            sheet.row_lower_bound = row_lower_bound;
-        }
-        if let Some(column_upper_bound) = range.column_upper_bound {
-            sheet.column_upper_bound = column_upper_bound;
-        }
-        if let Some(row_upper_bound) = range.row_upper_bound {
-            sheet.row_upper_bound = row_upper_bound;
-        }
+/// Parameter handler for skipping empty rows during processing.
+impl NamedParam<bool> for SkipEmptyRowsParam {
+    fn name() -> &'static str {
+        "skip_empty_rows"
     }
-    Ok(sheet)
+
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Boolean)
+    }
+
+    fn cast(value: Value) -> Result<bool, RustySheetError> {
+        Ok(value.to_bool())
+    }
+}
+
+/// Parameter handler for stopping data extraction at first empty row.
+impl NamedParam<bool> for EndAtEmptyRowParam {
+    fn name() -> &'static str {
+        "end_at_empty_row"
+    }
+
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Boolean)
+    }
+
+    fn cast(value: Value) -> Result<bool, RustySheetError> {
+        Ok(value.to_bool())
+    }
+}
+
+/// Parses a sheet specification string in format "filename_pattern=sheet_pattern" or "sheet_pattern".
+fn parse_sheet(value: String) -> Result<(Option<Pattern>, Pattern), RustySheetError> {
+    let (file_name_wildcard, sheet_name_wildcard) = if let Some(index) = value.find('=') {
+        (Some(value[..index].trim()), value[index + 1..].trim())
+    } else {
+        (None, value.as_str())
+    };
+    let file_name_pattern = file_name_wildcard
+        .map(|wildcard| Pattern::new(wildcard))
+        .transpose()?;
+    let sheet_name_pattern = Pattern::new(sheet_name_wildcard)?;
+    Ok((file_name_pattern, sheet_name_pattern))
+}
+
+/// Parses a column specification from map entries (name -> type).
+fn parse_column(name: &Value, kind: &Value) -> Result<(Pattern, ColumnType), RustySheetError> {
+    let name = name.to_string();
+    let kind = kind.to_string();
+    Ok((Pattern::new(&name)?, ColumnType::parse(&kind)?))
 }
