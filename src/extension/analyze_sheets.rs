@@ -1,3 +1,4 @@
+use crate::error::ResultMessage;
 use crate::error::RustySheetError;
 use crate::extension::AnalyzeRowsParam;
 use crate::extension::ErrorAsNullParam;
@@ -22,7 +23,6 @@ use glob::Pattern;
 use std::error::Error;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use anyhow::Context;
 
 /// Parameters for analyzing multiple spreadsheet sheets
 struct AnalyzeSheetsParameters {
@@ -83,7 +83,7 @@ impl TryFrom<&AnalyzeSheetsParameters> for AnalyzeSheetsBindData {
         let mut columns = Vec::<(String, String, String, String)>::new();
         let mut spreadsheets = parameters.files
             .iter()
-            .map(|path| open_spreadsheet(path).with_context(|| path.to_owned()))
+            .map(|path| open_spreadsheet(path).with_prefix(path))
             .collect::<Result<Vec<_>, _>>()?;
         let header = parameters.header.unwrap_or(true);
         for spreadsheet in &mut spreadsheets {
@@ -107,7 +107,7 @@ impl TryFrom<&AnalyzeSheetsParameters> for AnalyzeSheetsBindData {
                 error_as_null: parameters.error_as_null.unwrap_or(false),
                 skip_empty_rows: false,
                 end_at_empty_row: false,
-            }, &Vec::new()).with_context(|| spreadsheet.name().to_owned())? {
+            }, &Vec::new()).with_prefix(spreadsheet.name().as_str())? {
                 for column in &table.columns {
                     columns.push((
                         spreadsheet.name(),
@@ -218,7 +218,9 @@ impl VTab for AnalyzeSheetsTableFunction {
     /// # Returns
     /// * `Option<Vec<LogicalTypeHandle>>` - Required parameter types (file path)
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+        Some(vec![
+            FilesParam::kind()
+        ])
     }
 
     /// Returns the named parameter definitions for the table function

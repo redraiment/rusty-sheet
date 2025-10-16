@@ -196,8 +196,12 @@ impl Cell {
             CellType::IsoDateTime => {
                 NaiveDateTime::parse_from_str(&self.value, "%Y-%m-%dT%H:%M:%S%.f")
                     .map_err(|_| format!("parse '{}' to NaiveDateTime failed", self.value))
-                    .map(|datetime| datetime.time().nanosecond() as i64)
-                    .map(|nanoseconds| nanoseconds / 1000)
+                    .map(|datetime| {
+                        let time = datetime.time();
+                        let seconds = time.num_seconds_from_midnight() as i64;
+                        let nanoseconds = time.nanosecond() as i64;
+                        (seconds * 1_000_000) + (nanoseconds / 1_000)
+                    })
             }
             CellType::IsoDuration => {
                 if let Ok(duration) = self.value.parse::<IsoDuration>() {
@@ -233,9 +237,7 @@ impl Cell {
                         .map_err(|_| format!("parse '{}' to NaiveDate failed", self.value))
                         .map(|date| date.and_hms_opt(0, 0, 0).expect("Append 00:00:00"))
                 };
-                datetime
-                    .map(|datetime| datetime.nanosecond() as i64)
-                    .map(|nanoseconds| nanoseconds / 1000)
+                datetime.map(|datetime| datetime.and_utc().timestamp_micros())
             }
             CellType::IsoDuration => self.to_time(),
             _ => Err(format!("parse '{}' to datetime failed", self.value))?,

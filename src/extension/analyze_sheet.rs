@@ -1,3 +1,4 @@
+use crate::error::ResultMessage;
 use crate::error::RustySheetError;
 use crate::extension::AnalyzeRowsParam;
 use crate::extension::ErrorAsNullParam;
@@ -22,7 +23,6 @@ use glob::Pattern;
 use std::error::Error;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use anyhow::Context;
 
 /// Parameters for the analyze_sheet table function
 struct AnalyzeSheetParameters {
@@ -111,7 +111,7 @@ impl VTab for AnalyzeSheetTableFunction {
     /// Bind phase: parse parameters, analyze spreadsheet, and define result columns
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         let parameters = AnalyzeSheetParameters::try_from(bind)?;
-        let data = AnalyzeSheetBindData::try_from(&parameters).with_context(|| parameters.file_name.to_owned())?;
+        let data = AnalyzeSheetBindData::try_from(&parameters).with_prefix(parameters.file_name.as_str())?;
         bind.add_result_column(
             "column_name",
             LogicalTypeHandle::from(LogicalTypeId::Varchar),
@@ -156,7 +156,9 @@ impl VTab for AnalyzeSheetTableFunction {
 
     /// Define required positional parameters (file path)
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+        Some(vec![
+            FileNameParam::kind(),
+        ])
     }
 
     /// Define optional named parameters for advanced configuration

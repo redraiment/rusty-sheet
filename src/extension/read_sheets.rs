@@ -1,8 +1,8 @@
 use crate::database::column::Column;
 use crate::database::column::ColumnType;
+use crate::error::ResultMessage;
 use crate::error::RustySheetError;
 use crate::extension::writer::write_to_vector;
-use crate::extension::AnalyzeRowsParam;
 use crate::extension::ColumnsParam;
 use crate::extension::EndAtEmptyRowParam;
 use crate::extension::ErrorAsNullParam;
@@ -15,14 +15,13 @@ use crate::extension::Range;
 use crate::extension::RangeParam;
 use crate::extension::SheetsParam;
 use crate::extension::SkipEmptyRowsParam;
+use crate::extension::{AnalyzeRowsParam, FileNameColumnParam, SheetNameColumnParam};
 use crate::spreadsheet::criteria::Criteria;
 use crate::spreadsheet::open_spreadsheets;
 use crate::spreadsheet::sheet::Sheet;
-use anyhow::Context;
 use anyhow::Result;
-use duckdb::core::DataChunkHandle;
+use duckdb::core::{DataChunkHandle, Inserter};
 use duckdb::core::LogicalTypeHandle;
-use duckdb::core::LogicalTypeId;
 use duckdb::vtab::BindInfo;
 use duckdb::vtab::InitInfo;
 use duckdb::vtab::TableFunctionInfo;
@@ -52,6 +51,10 @@ struct ReadSheetsParameters {
     skip_empty_rows: Option<bool>,
     /// Stop reading at first empty row (default: false)
     end_at_empty_row: Option<bool>,
+    /// column name for file name of record
+    file_name_column: Option<String>,
+    /// column name for sheet name of record
+    sheet_name_column: Option<String>,
 }
 
 impl TryFrom<&BindInfo> for ReadSheetsParameters {
@@ -75,6 +78,8 @@ impl TryFrom<&BindInfo> for ReadSheetsParameters {
             error_as_null: ErrorAsNullParam::read(bind)?,
             skip_empty_rows: SkipEmptyRowsParam::read(bind)?,
             end_at_empty_row: EndAtEmptyRowParam::read(bind)?,
+            file_name_column: FileNameColumnParam::read(bind)?,
+            sheet_name_column: SheetNameColumnParam::read(bind)?,
         })
     }
 }
@@ -84,6 +89,10 @@ impl TryFrom<&BindInfo> for ReadSheetsParameters {
 pub(crate) struct ReadSheetsBindData {
     /// Column definitions with names and types
     columns: Vec<Column>,
+    /// file name column index
+    file_name_column: Option<usize>,
+    /// sheet name column index
+    sheet_name_column: Option<usize>,
     /// Loaded sheet data from all spreadsheets
     sheets: Vec<Sheet>,
     /// Mapping from sheet index to original spreadsheet index
@@ -113,27 +122,45 @@ impl TryFrom<&ReadSheetsParameters> for ReadSheetsBindData {
         let shared_strings = spreadsheets.iter_mut().map(|(spreadsheet, _)| {
             spreadsheet.load_shared_strings(None)
                 .map(|(shared_strings, _)| shared_strings)
-                .with_context(|| spreadsheet.name())
+                .with_prefix(spreadsheet.name().as_str())
         }).collect::<Result<Vec<_>, _>>()?;
 
         let header = parameters.header.unwrap_or(true);
         let error_as_null = parameters.error_as_null.unwrap_or(false);
         let skip_empty_rows = parameters.skip_empty_rows.unwrap_or(false);
         let end_at_empty_row = parameters.end_at_empty_row.unwrap_or(false);
-        let (spreadsheet, sheet_name_patterns) = &mut spreadsheets[0];
-        let tables = spreadsheet.analyze_sheets(header, &Criteria {
-            sheet_name_patterns: sheet_name_patterns.to_owned(),
-            sheet_limit: Some(1),
-            range: parameters.range,
-            rows_limit: parameters.analyze_rows.or(Some(10)),
-            error_as_null,
-            skip_empty_rows,
-            end_at_empty_row,
-        }, parameters.columns.as_ref().unwrap_or(&vec![])).with_context(|| spreadsheet.name())?;
-        let table = tables.get(0).ok_or_else(|| ExtensionError::SheetWildcardError(
-            spreadsheet.name().to_owned(),
-            sheet_name_patterns.as_ref().map(|patterns| patterns.iter().map(|it| it.to_string()).collect::<Vec<String>>().join(", ")).unwrap_or(String::new()),
-        ))?;
+        let tables= spreadsheets.iter_mut().find_map(|(spreadsheet, sheet_name_patterns)| {
+            let result = spreadsheet.analyze_sheets(header, &Criteria {
+                sheet_name_patterns: sheet_name_patterns.to_owned(),
+                sheet_limit: Some(1),
+                range: parameters.range,
+                rows_limit: parameters.analyze_rows.or(Some(10)),
+                error_as_null,
+                skip_empty_rows,
+                end_at_empty_row,
+            }, parameters.columns.as_ref().unwrap_or(&vec![]));
+            if result.as_ref().map(|tables| tables.is_empty()).unwrap_or(false) {
+                None
+            } else {
+                Some(result.with_prefix(spreadsheet.name().as_str()))
+            }
+        }).transpose()?;
+        let table = tables.and_then(|tables| tables.get(0).map(|table| table.to_owned())).ok_or_else(|| ExtensionError::SheetNotFoundError)?;
+        let mut columns = table.columns.to_owned();
+        let sheet_name_column = parameters.sheet_name_column.as_ref().map(|_| columns.len());
+        if let Some(name) = &parameters.sheet_name_column {
+            columns.push(Column {
+                name: name.to_owned(),
+                kind: ColumnType::Varchar,
+            });
+        }
+        let file_name_column = parameters.file_name_column.as_ref().map(|_| columns.len());
+        if let Some(name) = &parameters.file_name_column {
+            columns.push(Column {
+                name: name.to_owned(),
+                kind: ColumnType::Varchar,
+            });
+        }
 
         let sheets = spreadsheets.into_iter().map(|(mut spreadsheet, sheet_name_patterns)| {
             spreadsheet.read_sheets(&Criteria {
@@ -149,7 +176,7 @@ impl TryFrom<&ReadSheetsParameters> for ReadSheetsBindData {
                 error_as_null,
                 skip_empty_rows,
                 end_at_empty_row,
-            }).with_context(|| spreadsheet.name())
+            }).with_prefix(spreadsheet.name().as_str())
         }).collect::<Result<Vec<_>, _>>()?;
 
         let indexes = sheets.iter().enumerate().flat_map(|(index, sheets)| {
@@ -157,7 +184,9 @@ impl TryFrom<&ReadSheetsParameters> for ReadSheetsBindData {
         }).collect();
 
         Ok(ReadSheetsBindData {
-            columns: table.columns.to_owned(),
+            columns,
+            file_name_column,
+            sheet_name_column,
             sheets: sheets.into_iter().flatten().collect(),
             indexes,
             shared_strings,
@@ -258,7 +287,11 @@ impl VTab for ReadSheetsTableFunction {
                 for (row, record) in table.iter().enumerate() {
                     for (index, col) in init.projections.iter().enumerate() {
                         let vector = &mut vectors[index];
-                        if let Some(cell) = record[*col] {
+                        if bind.file_name_column.map(|column| column == *col).unwrap_or(false) {
+                            vector.insert(row, sheet.file_name.as_str());
+                        } else if bind.sheet_name_column.map(|column| column == *col).unwrap_or(false) {
+                            vector.insert(row, sheet.name.as_str());
+                        } else if let Some(cell) = record[*col] {
                             let column = &bind.columns[*col];
                             write_to_vector(sheet, column, cell, vector, row, shared_strings)?;
                         } else {
@@ -283,7 +316,9 @@ impl VTab for ReadSheetsTableFunction {
 
     /// Defines the required positional parameters for this table function
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+        Some(vec![
+            FilesParam::kind()
+        ])
     }
 
     /// Defines the named parameters for this table function
@@ -297,6 +332,8 @@ impl VTab for ReadSheetsTableFunction {
             ErrorAsNullParam::definition(),
             SkipEmptyRowsParam::definition(),
             EndAtEmptyRowParam::definition(),
+            FileNameColumnParam::definition(),
+            SheetNameColumnParam::definition(),
         ])
     }
 }

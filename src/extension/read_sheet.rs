@@ -1,5 +1,6 @@
 use crate::database::column::Column;
 use crate::database::column::ColumnType;
+use crate::error::ResultMessage;
 use crate::error::RustySheetError;
 use crate::extension::writer::write_to_vector;
 use crate::extension::AnalyzeRowsParam;
@@ -18,11 +19,9 @@ use crate::extension::SkipEmptyRowsParam;
 use crate::spreadsheet::criteria::Criteria;
 use crate::spreadsheet::open_spreadsheet;
 use crate::spreadsheet::sheet::Sheet;
-use anyhow::Context;
 use anyhow::Result;
 use duckdb::core::DataChunkHandle;
 use duckdb::core::LogicalTypeHandle;
-use duckdb::core::LogicalTypeId;
 use duckdb::vtab::BindInfo;
 use duckdb::vtab::InitInfo;
 use duckdb::vtab::TableFunctionInfo;
@@ -168,7 +167,7 @@ impl VTab for ReadSheetTableFunction {
     /// This is called once per query to set up the function's execution context.
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         let parameters = ReadSheetParameters::try_from(bind)?;
-        let data = ReadSheetBindData::try_from(&parameters).with_context(|| parameters.file_name.to_owned())?;
+        let data = ReadSheetBindData::try_from(&parameters).with_prefix(parameters.file_name.as_str())?;
         // Register output columns with DuckDB
         for column in &data.columns {
             bind.add_result_column(column.name.as_str(), LogicalTypeHandle::from(column.kind.to_logical_type_id()));
@@ -234,7 +233,9 @@ impl VTab for ReadSheetTableFunction {
     /// Defines the required positional parameters for the table function.
     /// The first parameter is always the file name/path.
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+        Some(vec![
+            FileNameParam::kind(),
+        ])
     }
 
     /// Defines the optional named parameters for the table function.

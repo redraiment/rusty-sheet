@@ -5,6 +5,9 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub(crate) enum RustySheetError {
     #[error("{0}")]
+    WithContextError(String),
+
+    #[error("{0}")]
     AnyhowError(#[from] anyhow::Error),
 
     // Standard library errors
@@ -89,5 +92,15 @@ impl <T, E> ResultOptionChain for Result<Option<T>, E> {
             Ok(None) => f(),
             _ => self,
         }
+    }
+}
+
+pub(crate) trait ResultMessage {
+    fn with_prefix(self, message: &str) -> Self;
+}
+
+impl <T> ResultMessage for Result<T, RustySheetError> {
+    fn with_prefix(self, message: &str) -> Self {
+        self.map_err(|e| RustySheetError::WithContextError(format!("{}: {}", message, e)))
     }
 }

@@ -25,12 +25,19 @@ pub(crate) enum ExtensionError {
     #[error("No files matched wildcard '{0}'")]
     FileWildcardError(String),
 
+    #[error("No worksheets matched the wildcard pattern in any of the files")]
+    SheetNotFoundError,
+
     #[error("Spreadsheet '{0}': no sheets matched wildcard '{1}'")]
     SheetWildcardError(String, String),
 }
 
 /// Trait for reading positional parameters from DuckDB bind info.
 pub(crate) trait Param<T> {
+
+    /// Returns the DuckDB logical type for this parameter.
+    fn kind() -> LogicalTypeHandle;
+
     /// Reads a positional parameter at the specified index.
     fn read(bind: &BindInfo, index: u64) -> Result<T, RustySheetError>;
 }
@@ -73,25 +80,43 @@ struct AnalyzeRowsParam;
 struct ErrorAsNullParam;
 struct SkipEmptyRowsParam;
 struct EndAtEmptyRowParam;
+struct FileNameColumnParam;
+struct SheetNameColumnParam;
 
 /// Parameter handler for file name (positional parameter).
 impl Param<String> for FileNameParam {
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Varchar)
+    }
+
     fn read(bind: &BindInfo, index: u64) -> Result<String, RustySheetError> {
         let value = bind.get_parameter(index);
         Ok(value.to_string())
     }
+
 }
 
 /// Parameter handler for file patterns with glob expansion.
 impl Param<Vec<String>> for FilesParam {
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar))
+    }
+
     fn read(bind: &BindInfo, index: u64) -> Result<Vec<String>, RustySheetError> {
-        let wildcard = bind.get_parameter(index).to_string();
-        let files = glob(&wildcard)?
+        let wildcards = bind.get_parameter(index)
+            .to_list()
+            .iter()
+            .map(|parameter| parameter.to_string())
+            .collect::<Vec<_>>();
+
+        let files = wildcards.iter()
+            .map(|wildcard| glob(wildcard))
             .filter_map(Result::ok)
-            .map(|path| path.to_string_lossy().to_string())
+            .flat_map(|paths| paths.filter_map(Result::ok))
+            .map(|path| path.to_str().unwrap().to_string())
             .collect::<Vec<_>>();
         if files.is_empty() {
-            Err(ExtensionError::FileWildcardError(wildcard))?
+            Err(ExtensionError::FileWildcardError(wildcards.join(", ")))?
         }
         Ok(files)
     }
@@ -244,6 +269,34 @@ impl NamedParam<bool> for EndAtEmptyRowParam {
 
     fn cast(value: Value) -> Result<bool, RustySheetError> {
         Ok(value.to_bool())
+    }
+}
+
+impl NamedParam<String> for FileNameColumnParam {
+    fn name() -> &'static str {
+        "file_name_column"
+    }
+
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Varchar)
+    }
+
+    fn cast(value: Value) -> Result<String, RustySheetError> {
+        Ok(value.to_string())
+    }
+}
+
+impl NamedParam<String> for SheetNameColumnParam {
+    fn name() -> &'static str {
+        "sheet_name_column"
+    }
+
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Varchar)
+    }
+
+    fn cast(value: Value) -> Result<String, RustySheetError> {
+        Ok(value.to_string())
     }
 }
 
