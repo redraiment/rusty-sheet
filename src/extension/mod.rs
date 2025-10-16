@@ -25,12 +25,22 @@ pub(crate) enum ExtensionError {
     #[error("No files matched wildcard '{0}'")]
     FileWildcardError(String),
 
+    #[error("No worksheets matched the wildcard pattern in any of the files")]
+    SheetNotFoundError,
+
     #[error("Spreadsheet '{0}': no sheets matched wildcard '{1}'")]
     SheetWildcardError(String, String),
+
+    #[error("[{0}]{1}!{2}: expected {3:?}, actual {4:?}")]
+    ColumnTypeError(String, String, String, ColumnType, ColumnType),
 }
 
 /// Trait for reading positional parameters from DuckDB bind info.
 pub(crate) trait Param<T> {
+
+    /// Returns the DuckDB logical type for this parameter.
+    fn kind() -> LogicalTypeHandle;
+
     /// Reads a positional parameter at the specified index.
     fn read(bind: &BindInfo, index: u64) -> Result<T, RustySheetError>;
 }
@@ -62,45 +72,64 @@ pub(crate) trait NamedParam<T> {
     fn cast(value: Value) -> Result<T, RustySheetError>;
 }
 
-struct FileNameParam;
+struct FileParam;
 struct FilesParam;
-struct SheetNameParam;
+struct SheetParam;
 struct SheetsParam;
 struct RangeParam;
 struct HeaderParam;
+struct UnionByNameParam;
 struct ColumnsParam;
 struct AnalyzeRowsParam;
 struct ErrorAsNullParam;
 struct SkipEmptyRowsParam;
 struct EndAtEmptyRowParam;
+struct FileNameColumnParam;
+struct SheetNameColumnParam;
 
 /// Parameter handler for file name (positional parameter).
-impl Param<String> for FileNameParam {
+impl Param<String> for FileParam {
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Varchar)
+    }
+
     fn read(bind: &BindInfo, index: u64) -> Result<String, RustySheetError> {
         let value = bind.get_parameter(index);
         Ok(value.to_string())
     }
+
 }
 
 /// Parameter handler for file patterns with glob expansion.
 impl Param<Vec<String>> for FilesParam {
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar))
+    }
+
     fn read(bind: &BindInfo, index: u64) -> Result<Vec<String>, RustySheetError> {
-        let wildcard = bind.get_parameter(index).to_string();
-        let files = glob(&wildcard)?
+        let wildcards = bind.get_parameter(index)
+            .to_list()
+            .iter()
+            .map(|parameter| parameter.to_string())
+            .collect::<Vec<_>>();
+
+        let files = wildcards.iter()
+            .map(|wildcard| glob(wildcard))
             .filter_map(Result::ok)
-            .map(|path| path.to_string_lossy().to_string())
+            .flat_map(|paths| paths.filter_map(Result::ok))
+            .map(|path| path.to_str().unwrap().to_string())
             .collect::<Vec<_>>();
         if files.is_empty() {
-            Err(ExtensionError::FileWildcardError(wildcard))?
+            Err(ExtensionError::FileWildcardError(wildcards.join(", ")))?
         }
         Ok(files)
     }
 }
 
 /// Parameter handler for sheet name pattern matching.
-impl NamedParam<Pattern> for SheetNameParam {
+impl NamedParam<Pattern> for SheetParam {
     fn name() -> &'static str {
-        "sheet_name"
+        "sheet"
     }
 
     fn kind() -> LogicalTypeHandle {
@@ -153,6 +182,21 @@ impl NamedParam<Range> for RangeParam {
 impl NamedParam<bool> for HeaderParam {
     fn name() -> &'static str {
         "header"
+    }
+
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Boolean)
+    }
+
+    fn cast(value: Value) -> Result<bool, RustySheetError> {
+        Ok(value.to_bool())
+    }
+}
+
+/// Parameter handler for union by name flag.
+impl NamedParam<bool> for UnionByNameParam {
+    fn name() -> &'static str {
+        "union_by_name"
     }
 
     fn kind() -> LogicalTypeHandle {
@@ -244,6 +288,34 @@ impl NamedParam<bool> for EndAtEmptyRowParam {
 
     fn cast(value: Value) -> Result<bool, RustySheetError> {
         Ok(value.to_bool())
+    }
+}
+
+impl NamedParam<String> for FileNameColumnParam {
+    fn name() -> &'static str {
+        "file_name_column"
+    }
+
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Varchar)
+    }
+
+    fn cast(value: Value) -> Result<String, RustySheetError> {
+        Ok(value.to_string())
+    }
+}
+
+impl NamedParam<String> for SheetNameColumnParam {
+    fn name() -> &'static str {
+        "sheet_name_column"
+    }
+
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Varchar)
+    }
+
+    fn cast(value: Value) -> Result<String, RustySheetError> {
+        Ok(value.to_string())
     }
 }
 

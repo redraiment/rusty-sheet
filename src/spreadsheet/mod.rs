@@ -135,16 +135,12 @@ pub(crate) trait Spreadsheet {
 
             let columns = names.iter().zip(kinds)
                 .map(|(name, kind)| {
-                    if let Some((_, kind)) = presets.iter().find(|(pattern, _)| pattern.matches(name)) {
-                        Column {
-                            name: name.to_owned(),
-                            kind: kind.to_owned(),
-                        }
-                    } else {
-                        Column {
-                            name: name.to_owned(),
-                            kind,
-                        }
+                    Column {
+                        name: name.to_owned(),
+                        kind: presets.iter()
+                            .find(|(pattern, _)| pattern.matches(name))
+                            .map(|(_, kind)| kind.to_owned())
+                            .unwrap_or(kind.to_owned()),
                     }
                 })
                 .collect::<Vec<_>>();

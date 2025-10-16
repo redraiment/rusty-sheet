@@ -31,9 +31,10 @@ impl TryFrom<&str> for Range {
     /// Supports single cells, ranges, and partial ranges (columns or rows only).
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let pattern = Regex::new(r"^([A-Z]*)(\d*)(:([A-Z]*)(\d*))?$").expect("Hardcode regex pattern");
+        let value = value.to_ascii_uppercase();
         let captures = pattern
-            .captures(value)
-            .ok_or(RangeError::FormatError(value.to_string()))?;
+            .captures(value.as_str())
+            .ok_or(RangeError::FormatError(value.to_owned()))?;
         Ok(Range {
             col_lower_bound: captures
                 .get(1)

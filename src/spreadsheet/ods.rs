@@ -281,13 +281,12 @@ impl Spreadsheet for OdsSpreadsheet {
 /// # Returns
 /// * `Result<(), RustySheetError>` - Success or MIME type error
 fn check_mime(zip: &mut ZipArchive<BufReader<File>>) -> Result<(), RustySheetError> {
-    let mut file = zip
-        .file("mimetype")?
-        .expect("MIME type");
-    let mut buffer = [0u8; 46];
-    file.read_exact(&mut buffer)?;
-    if &buffer[..] != MIME_TYPE {
-        Err(OdsError::MimeTypeError)?;
+    if let Some(file) = &mut zip.file("mimetype")? {
+        let mut buffer = [0u8; 46];
+        file.read_exact(&mut buffer)?;
+        if &buffer[..] != MIME_TYPE {
+            Err(OdsError::MimeTypeError)?;
+        }
     }
     Ok(())
 }

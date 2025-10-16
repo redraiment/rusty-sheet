@@ -1,5 +1,6 @@
 use crate::database::column::Column;
 use crate::database::column::ColumnType;
+use crate::error::ResultMessage;
 use crate::error::RustySheetError;
 use crate::extension::writer::write_to_vector;
 use crate::extension::AnalyzeRowsParam;
@@ -7,22 +8,23 @@ use crate::extension::ColumnsParam;
 use crate::extension::EndAtEmptyRowParam;
 use crate::extension::ErrorAsNullParam;
 use crate::extension::ExtensionError;
-use crate::extension::FileNameParam;
+use crate::extension::FileNameColumnParam;
+use crate::extension::FileParam;
 use crate::extension::HeaderParam;
 use crate::extension::NamedParam;
 use crate::extension::Param;
 use crate::extension::Range;
 use crate::extension::RangeParam;
-use crate::extension::SheetNameParam;
+use crate::extension::SheetNameColumnParam;
+use crate::extension::SheetParam;
 use crate::extension::SkipEmptyRowsParam;
 use crate::spreadsheet::criteria::Criteria;
 use crate::spreadsheet::open_spreadsheet;
 use crate::spreadsheet::sheet::Sheet;
-use anyhow::Context;
 use anyhow::Result;
 use duckdb::core::DataChunkHandle;
+use duckdb::core::Inserter;
 use duckdb::core::LogicalTypeHandle;
-use duckdb::core::LogicalTypeId;
 use duckdb::vtab::BindInfo;
 use duckdb::vtab::InitInfo;
 use duckdb::vtab::TableFunctionInfo;
@@ -52,6 +54,10 @@ struct ReadSheetParameters {
     skip_empty_rows: Option<bool>,
     /// Stop reading when encountering an empty row
     end_at_empty_row: Option<bool>,
+    /// column name for file name of record
+    file_name_column: Option<String>,
+    /// column name for sheet name of record
+    sheet_name_column: Option<String>,
 }
 
 impl TryFrom<&BindInfo> for ReadSheetParameters {
@@ -61,8 +67,8 @@ impl TryFrom<&BindInfo> for ReadSheetParameters {
     /// Extracts all named parameters from the SQL function call and validates them.
     fn try_from(bind: &BindInfo) -> Result<Self, Self::Error> {
         Ok(ReadSheetParameters {
-            file_name: FileNameParam::read(bind, 0)?,
-            sheet_name: SheetNameParam::read(bind)?,
+            file_name: FileParam::read(bind, 0)?,
+            sheet_name: SheetParam::read(bind)?,
             range: RangeParam::read(bind)?,
             header: HeaderParam::read(bind)?,
             columns: ColumnsParam::read(bind)?,
@@ -70,6 +76,8 @@ impl TryFrom<&BindInfo> for ReadSheetParameters {
             error_as_null: ErrorAsNullParam::read(bind)?,
             skip_empty_rows: SkipEmptyRowsParam::read(bind)?,
             end_at_empty_row: EndAtEmptyRowParam::read(bind)?,
+            file_name_column: FileNameColumnParam::read(bind)?,
+            sheet_name_column: SheetNameColumnParam::read(bind)?,
         })
     }
 }
@@ -80,6 +88,10 @@ impl TryFrom<&BindInfo> for ReadSheetParameters {
 pub(crate) struct ReadSheetBindData {
     /// Column definitions including names, types, and metadata
     columns: Vec<Column>,
+    /// file name column index
+    file_name_column: Option<usize>,
+    /// sheet name column index
+    sheet_name_column: Option<usize>,
     /// Loaded sheet data organized in chunks for efficient processing
     sheets: Vec<Sheet>,
     /// Shared string table for efficient string storage (XLSX/XLSB format)
@@ -121,6 +133,21 @@ impl TryFrom<&ReadSheetParameters> for ReadSheetBindData {
             spreadsheet.name().to_owned(),
             parameters.sheet_name.as_ref().map(|it| it.to_string()).unwrap_or(String::new()),
         ))?;
+        let mut columns = table.columns.to_owned();
+        let sheet_name_column = parameters.sheet_name_column.as_ref().map(|_| columns.len());
+        if let Some(name) = &parameters.sheet_name_column {
+            columns.push(Column {
+                name: name.to_owned(),
+                kind: ColumnType::Varchar,
+            });
+        }
+        let file_name_column = parameters.file_name_column.as_ref().map(|_| columns.len());
+        if let Some(name) = &parameters.file_name_column {
+            columns.push(Column {
+                name: name.to_owned(),
+                kind: ColumnType::Varchar,
+            });
+        }
 
         // Read the actual data from the spreadsheet using the analyzed structure
         let sheets = spreadsheet.read_sheets(&Criteria {
@@ -139,7 +166,9 @@ impl TryFrom<&ReadSheetParameters> for ReadSheetBindData {
         })?;
 
         Ok(ReadSheetBindData {
-            columns: table.columns.to_owned(),
+            columns,
+            file_name_column,
+            sheet_name_column,
             sheets,
             shared_strings,
         })
@@ -168,7 +197,7 @@ impl VTab for ReadSheetTableFunction {
     /// This is called once per query to set up the function's execution context.
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         let parameters = ReadSheetParameters::try_from(bind)?;
-        let data = ReadSheetBindData::try_from(&parameters).with_context(|| parameters.file_name.to_owned())?;
+        let data = ReadSheetBindData::try_from(&parameters).with_prefix(parameters.file_name.as_str())?;
         // Register output columns with DuckDB
         for column in &data.columns {
             bind.add_result_column(column.name.as_str(), LogicalTypeHandle::from(column.kind.to_logical_type_id()));
@@ -207,7 +236,11 @@ impl VTab for ReadSheetTableFunction {
                 for (row, record) in table.iter().enumerate() {
                     for (index, col) in init.projections.iter().enumerate() {
                         let vector = &mut vectors[index];
-                        if let Some(cell) = record[*col] {
+                        if bind.file_name_column.map(|column| column == *col).unwrap_or(false) {
+                            vector.insert(row, sheet.file_name.as_str());
+                        } else if bind.sheet_name_column.map(|column| column == *col).unwrap_or(false) {
+                            vector.insert(row, sheet.name.as_str());
+                        } else if let Some(cell) = record[*col] {
                             let column = &bind.columns[*col];
                             write_to_vector(sheet, column, cell, vector, row, shared_strings)?;
                         } else {
@@ -234,14 +267,16 @@ impl VTab for ReadSheetTableFunction {
     /// Defines the required positional parameters for the table function.
     /// The first parameter is always the file name/path.
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+        Some(vec![
+            FileParam::kind(),
+        ])
     }
 
     /// Defines the optional named parameters for the table function.
     /// These provide fine-grained control over the reading behavior.
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
         Some(vec![
-            SheetNameParam::definition(),
+            SheetParam::definition(),
             RangeParam::definition(),
             HeaderParam::definition(),
             ColumnsParam::definition(),
@@ -249,6 +284,8 @@ impl VTab for ReadSheetTableFunction {
             ErrorAsNullParam::definition(),
             SkipEmptyRowsParam::definition(),
             EndAtEmptyRowParam::definition(),
+            FileNameColumnParam::definition(),
+            SheetNameColumnParam::definition(),
         ])
     }
 }

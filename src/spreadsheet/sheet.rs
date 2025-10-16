@@ -129,7 +129,7 @@ impl Sheet {
                 self.chunk_index_lower = chunk_index_upper;
                 self.chunk_row_lower = Some(row);
             } else {
-                while chunk_row_lower + Self::CHUNK_SIZE < row { // Chunk full
+                while chunk_row_lower + Self::CHUNK_SIZE <= row { // Chunk full
                     self.chunks.push((
                         chunk_row_lower,
                         chunk_row_lower + Self::CHUNK_SIZE - 1,

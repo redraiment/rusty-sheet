@@ -1,13 +1,14 @@
+use crate::error::ResultMessage;
 use crate::error::RustySheetError;
 use crate::extension::AnalyzeRowsParam;
 use crate::extension::ErrorAsNullParam;
-use crate::extension::FileNameParam;
+use crate::extension::FileParam;
 use crate::extension::HeaderParam;
 use crate::extension::NamedParam;
 use crate::extension::Param;
 use crate::extension::Range;
 use crate::extension::RangeParam;
-use crate::extension::SheetNameParam;
+use crate::extension::SheetParam;
 use crate::spreadsheet::criteria::Criteria;
 use crate::spreadsheet::open_spreadsheet;
 use duckdb::core::DataChunkHandle;
@@ -22,7 +23,6 @@ use glob::Pattern;
 use std::error::Error;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use anyhow::Context;
 
 /// Parameters for the analyze_sheet table function
 struct AnalyzeSheetParameters {
@@ -46,8 +46,8 @@ impl TryFrom<&BindInfo> for AnalyzeSheetParameters {
     /// Parse parameters from DuckDB bind info
     fn try_from(bind: &BindInfo) -> Result<Self, Self::Error> {
         Ok(AnalyzeSheetParameters {
-            file_name: FileNameParam::read(bind, 0)?,
-            sheet_name: SheetNameParam::read(bind)?,
+            file_name: FileParam::read(bind, 0)?,
+            sheet_name: SheetParam::read(bind)?,
             range: RangeParam::read(bind)?,
             header: HeaderParam::read(bind)?,
             analyze_rows: AnalyzeRowsParam::read(bind)?,
@@ -111,7 +111,7 @@ impl VTab for AnalyzeSheetTableFunction {
     /// Bind phase: parse parameters, analyze spreadsheet, and define result columns
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         let parameters = AnalyzeSheetParameters::try_from(bind)?;
-        let data = AnalyzeSheetBindData::try_from(&parameters).with_context(|| parameters.file_name.to_owned())?;
+        let data = AnalyzeSheetBindData::try_from(&parameters).with_prefix(parameters.file_name.as_str())?;
         bind.add_result_column(
             "column_name",
             LogicalTypeHandle::from(LogicalTypeId::Varchar),
@@ -156,13 +156,15 @@ impl VTab for AnalyzeSheetTableFunction {
 
     /// Define required positional parameters (file path)
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+        Some(vec![
+            FileParam::kind(),
+        ])
     }
 
     /// Define optional named parameters for advanced configuration
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
         Some(vec![
-            SheetNameParam::definition(),
+            SheetParam::definition(),
             RangeParam::definition(),
             HeaderParam::definition(),
             AnalyzeRowsParam::definition(),

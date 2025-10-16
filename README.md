@@ -13,9 +13,8 @@ A DuckDB extension that enables reading Excel, WPS, and OpenDocument spreadsheet
 - **Excel-Style Data Ranges**: Specify data ranges using familiar Excel notation (e.g., `"A1:C3"`)
 - **Automatic Column Type Detection**: Column types are inferred automatically; override specific columns with the `columns` parameter
 - **Header Row Handling**: Automatic detection and parsing of header rows
-- **Error Handling**: Configurable behavior for parsing errors with precise cell location reporting
+- **Error Handling**: Configurable behavior for parsing errors with precise cell location and file name reporting
 - **Type Safety**: Built-in data type validation and conversion
-- **Pure Rust Implementation**: No external dependencies, leveraging Rust's memory safety and performance
 - **Advanced Data Filtering**: Skip empty rows or stop at first empty row for efficient data processing
 
 ## Installation
@@ -69,7 +68,7 @@ LOAD './build/debug/extension/rusty-sheet/rusty-sheet.duckdb_extension';
 
 ### Basic Examples
 
-#### Read entire spreadsheet with headers
+#### Read first sheet of spreadsheet with headers
 
 ```sql
 SELECT * FROM read_sheet('data.xlsx');
@@ -78,7 +77,7 @@ SELECT * FROM read_sheet('data.xlsx');
 #### Read specific worksheet
 
 ```sql
-SELECT * FROM read_sheet('workbook.xlsx', sheet_name='Sheet2');
+SELECT * FROM read_sheet('workbook.xlsx', sheet='Sheet2');
 ```
 
 #### Override specific column types (others auto-detected)
@@ -116,34 +115,54 @@ SELECT * FROM analyze_sheet('data.xlsx', analyze_rows=20);
 
 ```sql
 -- Read all Excel files in directory
-SELECT * FROM read_sheets('*.xlsx');
+SELECT * FROM read_sheets(['*.xlsx']);
 
 -- Read all WPS files
-SELECT * FROM read_sheets('*.et');
+SELECT * FROM read_sheets(['*.et']);
+
+-- Read multiple file types using list patterns
+SELECT * FROM read_sheets(['*.xls', '*.xlsx']);
+
+-- Read multiple file types with different extensions
+SELECT * FROM read_sheets(['*.xlsx', '*.ods', '*.et']);
 ```
 
 #### Analyze multiple files and worksheets
 
 ```sql
 -- Analyze all worksheets in all Excel files
-SELECT * FROM analyze_sheets('*.xlsx');
+SELECT * FROM analyze_sheets(['*.xlsx']);
 
 -- Analyze specific worksheets across files
-SELECT * FROM analyze_sheets('*.xlsx', sheets=['Sheet1', 'Sheet2']);
+SELECT * FROM analyze_sheets(['*.xlsx'], sheets=['Sheet1', 'Sheet2']);
 
 -- Analyze with wildcard pattern
-SELECT * FROM analyze_sheets('*.xlsx', sheets=['Sheet*']);
+SELECT * FROM analyze_sheets(['*.xlsx'], sheets=['Sheet*']);
+
+-- Analyze multiple file types
+SELECT * FROM analyze_sheets(['*.xlsx', '*.ods']);
 ```
 
 #### Advanced pattern matching
 
 ```sql
 -- Match specific worksheets only in specific file types
-SELECT * FROM read_sheets('*.xlsx', sheets=['*.xlsx=Sheet*']);
+SELECT * FROM read_sheets(['*.xlsx'], sheets=['*.xlsx=Sheet*']);
 
 -- Read multiple file types
-SELECT * FROM read_sheets('*.*');
+SELECT * FROM read_sheets(['*.*']);
+
+-- Use multiple file patterns with improved matching
+SELECT * FROM read_sheets(['*.xls', '*.xlsx'], sheets=['Sheet*']);
 ```
+
+### Improved Wildcard Matching
+
+The `read_sheets` and `analyze_sheets` functions now feature enhanced matching logic:
+
+- **Multiple Pattern Support**: Accepts lists of file patterns for flexible multi-format processing
+- **Smart Worksheet Discovery**: When using wildcards, the system finds the first worksheet that matches both the file pattern and worksheet pattern, reducing "no matching worksheets" errors
+- **File-Specific Matching**: Improved handling of file-specific worksheet patterns like `*.xlsx=Sheet*`
 
 #### Advanced data filtering
 
@@ -164,7 +183,7 @@ Analyzes the column structure of a single worksheet in a single file.
 **Parameters:**
 
 - **file_path** (required): Path to the spreadsheet file (no wildcard support)
-- **sheet_name** (optional, default first sheet): Worksheet name (supports wildcards like `Sheet*`)
+- **sheet** (optional, default first sheet): Worksheet name (supports wildcards like `Sheet*`)
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
 - **analyze_rows** (optional, default `10`): Number of rows to analyze for type inference
@@ -177,7 +196,7 @@ Analyzes the column structure of a single worksheet in a single file.
 SELECT * FROM analyze_sheet('data.xlsx');
 
 -- Analyze specific worksheet
-SELECT * FROM analyze_sheet('data.xlsx', sheet_name='Sheet2');
+SELECT * FROM analyze_sheet('data.xlsx', sheet='Sheet2');
 
 -- Analyze specific range
 SELECT * FROM analyze_sheet('data.xlsx', range='A1:C10');
@@ -192,8 +211,8 @@ Analyzes column structures of multiple worksheets across multiple files with wil
 
 **Parameters:**
 
-- **file_pattern** (required): File path pattern with wildcard support (e.g., `*.xlsx`, `*.et`)
-- **sheets** (optional): List of worksheet names (supports wildcards and file-specific patterns like `Sheet*`, `*.xlsx=Sheet*`)
+- **file_pattern** (required): File path pattern(s) with wildcard support (e.g., `['*.xlsx']`, `['*.xls', '*.xlsx']`)
+- **sheets** (optional): List of worksheet names (supports wildcards and file-specific patterns like `['Sheet*']`, `['*.xlsx=Sheet*']`)
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
 - **analyze_rows** (optional, default `10`): Number of rows to analyze for type inference
@@ -203,16 +222,19 @@ Analyzes column structures of multiple worksheets across multiple files with wil
 
 ```sql
 -- Analyze all worksheets in all Excel files
-SELECT * FROM analyze_sheets('*.xlsx');
+SELECT * FROM analyze_sheets(['*.xlsx']);
 
 -- Analyze specific worksheets across files
-SELECT * FROM analyze_sheets('*.xlsx', sheets=['Sheet1', 'Sheet2']);
+SELECT * FROM analyze_sheets(['*.xlsx'], sheets=['Sheet1', 'Sheet2']);
 
 -- Use wildcard to match worksheets
-SELECT * FROM analyze_sheets('*.xlsx', sheets=['Sheet*']);
+SELECT * FROM analyze_sheets(['*.xlsx'], sheets=['Sheet*']);
 
 -- File-specific pattern matching
-SELECT * FROM analyze_sheets('*.xlsx', sheets=['*.xlsx=Sheet*']);
+SELECT * FROM analyze_sheets(['*.xlsx'], sheets=['*.xlsx=Sheet*']);
+
+-- Analyze multiple file types
+SELECT * FROM analyze_sheets(['*.xlsx', '*.ods']);
 ```
 
 ### read_sheet
@@ -222,7 +244,7 @@ Reads data from a single worksheet in a single file.
 **Parameters:**
 
 - **file_path** (required): Path to the spreadsheet file (no wildcard support)
-- **sheet_name** (optional, default first sheet): Worksheet name (supports wildcards like `Sheet*`)
+- **sheet** (optional, default first sheet): Worksheet name (supports wildcards like `Sheet*`)
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
 - **analyze_rows** (optional, default `10`): Number of rows to analyze for type inference
@@ -237,7 +259,7 @@ Reads data from a single worksheet in a single file.
 SELECT * FROM read_sheet('data.xlsx');
 
 -- Read specific worksheet
-SELECT * FROM read_sheet('workbook.xlsx', sheet_name='Sheet2');
+SELECT * FROM read_sheet('workbook.xlsx', sheet='Sheet2');
 
 -- Read specific data range
 SELECT * FROM read_sheet('data.xlsx', range='A2:E100');
@@ -256,37 +278,61 @@ SELECT * FROM read_sheet('messy_data.xlsx', error_as_null=true);
 
 Reads data from multiple worksheets across multiple files with wildcard pattern matching.
 
+**Important Note:** When using wildcard patterns, this function analyzes the column structure and data types from the **first matching worksheet** only. All subsequent worksheets with matching patterns will use the same column structure, even if their actual structure differs. For worksheets with varying structures, consider using `analyze_sheets` first to inspect individual worksheet structures.
+
 **Parameters:**
 
-- **file_pattern** (required): File path pattern with wildcard support (e.g., `*.xlsx`, `*.et`)
-- **sheets** (optional): List of worksheet names (supports wildcards and file-specific patterns like `Sheet*`, `*.xlsx=Sheet*`)
+- **file_pattern** (required): File path pattern(s) with wildcard support (e.g., `['*.xlsx']`, `['*.xls', '*.xlsx']`)
+- **sheets** (optional): List of worksheet names (supports wildcards and file-specific patterns like `['Sheet*']`, `['*.xlsx=Sheet*']`)
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
 - **analyze_rows** (optional, default `10`): Number of rows to analyze for type inference
 - **error_as_null** (optional, default `false`): If true, convert parsing errors to NULL instead of failing
 - **skip_empty_rows** (optional, default `false`): Skip rows where all columns contain empty values
 - **end_at_empty_row** (optional, default `false`): Stop reading at the first completely empty row
+- **file_name_column** (optional): Column name to include file source information in results
+- **sheet_name_column** (optional): Column name to include worksheet source information in results
+- **union_by_name** (optional, default `false`): When false, union data by position; when true, union data by column name
 
 **Examples:**
 
 ```sql
 -- Read all Excel files
-SELECT * FROM read_sheets('*.xlsx');
+SELECT * FROM read_sheets(['*.xlsx']);
 
 -- Read all WPS files
-SELECT * FROM read_sheets('*.et');
+SELECT * FROM read_sheets(['*.et']);
 
 -- Read specific worksheets
-SELECT * FROM read_sheets('*.xlsx', sheets=['Sheet1', 'Sheet2']);
+SELECT * FROM read_sheets(['*.xlsx'], sheets=['Sheet1', 'Sheet2']);
 
 -- Use wildcard to match worksheets
-SELECT * FROM read_sheets('*.xlsx', sheets=['Sheet*']);
+SELECT * FROM read_sheets(['*.xlsx'], sheets=['Sheet*']);
 
 -- File-specific pattern matching
-SELECT * FROM read_sheets('*.xlsx', sheets=['*.xlsx=Sheet*']);
+SELECT * FROM read_sheets(['*.xlsx'], sheets=['*.xlsx=Sheet*']);
 
 -- Skip empty rows in batch processing
-SELECT * FROM read_sheets('*.xlsx', skip_empty_rows=true);
+SELECT * FROM read_sheets(['*.xlsx'], skip_empty_rows=true);
+
+-- Read multiple file types
+SELECT * FROM read_sheets(['*.xls', '*.xlsx']);
+
+-- Track data sources with custom column names
+SELECT * FROM read_sheets(['*.xls', '*.xlsx'],
+  sheets=['Sheet*'],
+  file_name_column='file',
+  sheet_name_column='worksheet'
+);
+
+-- Union data by column name instead of position
+SELECT * FROM read_sheets(['*.xlsx'], union_by_name=true);
+
+-- Union by name with specific worksheets
+SELECT * FROM read_sheets(['*.xlsx'],
+  sheets=['Sheet1', 'Sheet2'],
+  union_by_name=true
+);
 ```
 
 ### Supported Data Types
@@ -378,27 +424,27 @@ The extension supports Rust glob patterns for file and worksheet matching.
 
 ```sql
 -- Single character wildcard
-SELECT * FROM read_sheets('data_2024_??.xlsx');
+SELECT * FROM read_sheets(['data_2024_??.xlsx']);
 
 -- Multiple character wildcard
-SELECT * FROM read_sheets('report_*.xlsx');
+SELECT * FROM read_sheets(['report_*.xlsx']);
 
 -- Character set matching
-SELECT * FROM read_sheets('data_[0-9].xlsx');
-SELECT * FROM read_sheets('file_[abc].xlsx');
+SELECT * FROM read_sheets(['data_[0-9].xlsx']);
+SELECT * FROM read_sheets(['file_[abc].xlsx']);
 
 -- Negation pattern
-SELECT * FROM read_sheets('file_[!test]*.xlsx');
+SELECT * FROM read_sheets(['file_[!test]*.xlsx']);
 
 -- Recursive directory matching
-SELECT * FROM read_sheets('**/*.xlsx');
+SELECT * FROM read_sheets(['**/*.xlsx']);
 
 -- Worksheet pattern matching
-SELECT * FROM read_sheets('*.xlsx', sheets=['Sheet?']);
-SELECT * FROM read_sheets('*.xlsx', sheets=['Data*']);
+SELECT * FROM read_sheets(['*.xlsx'], sheets=['Sheet?']);
+SELECT * FROM read_sheets(['*.xlsx'], sheets=['Data*']);
 
 -- File-specific worksheet patterns
-SELECT * FROM read_sheets('*.xlsx', sheets=['*.xlsx=Sheet*']);
+SELECT * FROM read_sheets(['*.xlsx'], sheets=['*.xlsx=Sheet*']);
 ```
 
 ### Special Notes
