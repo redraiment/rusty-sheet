@@ -20,15 +20,26 @@
 
 ## 安装
 
-### 前置要求
+**需要 DuckDB 1.4.1 或更高版本**以支持社区扩展。
+
+### 社区安装（推荐）
+
+安装 rusty_sheet 最简单的方法是通过 DuckDB 的社区扩展平台：
+
+```sql
+INSTALL rusty_sheet FROM community;
+LOAD rusty_sheet;
+```
+
+### 从源码构建
+
+#### 前置要求
 
 - Python 3
 - Python 3-venv
 - [Make](https://www.gnu.org/software/make)
 - Git
 - Rust 工具链
-
-### 从源码构建
 
 1. 克隆仓库：
 ```bash

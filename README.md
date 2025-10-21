@@ -19,15 +19,26 @@ A DuckDB extension that enables reading Excel, WPS, and OpenDocument spreadsheet
 
 ## Installation
 
-### Prerequisites
+**DuckDB 1.4.1 or later is required** for community extension support.
+
+### Community Installation (Recommended)
+
+The easiest way to install rusty_sheet is through DuckDB's community extension platform:
+
+```sql
+INSTALL rusty_sheet FROM community;
+LOAD rusty_sheet;
+```
+
+### Building from Source
+
+#### Prerequisites
 
 - Python 3
 - Python 3-venv
 - [Make](https://www.gnu.org/software/make)
 - Git
 - Rust toolchain
-
-### Building from Source
 
 1. Clone the repository:
 ```bash
