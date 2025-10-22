@@ -1,6 +1,7 @@
 //! Microsoft Office Excel Helpers
 use crate::error::RustySheetError;
 use crate::helpers::cfb::Cfb;
+use crate::helpers::file_reader::{UnifiedReader, open_remote_file};
 use crate::helpers::xml::XmlNodeHelper;
 use crate::helpers::zip::ZipHelper;
 use crate::match_xml_events;
@@ -10,9 +11,6 @@ use quick_xml::events::Event;
 use quick_xml::name::QName;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufReader;
-use std::path::Path;
 use zip::ZipArchive;
 
 /// XML tag name for relationship elements in Excel files
@@ -31,20 +29,23 @@ const TAG_RELATIONSHIP: QName = QName(b"Relationship");
 /// - Number format mappings
 /// - List of sheet names and their paths
 pub(super) fn open<W, F>(file_name: &str, load_workbook: W, load_number_formats: F) -> Result<(
-    ZipArchive<BufReader<File>>,
+    ZipArchive<UnifiedReader>,
     Vec<CellType>,
     Vec<(String, String)>
 ), RustySheetError>
 where
-    W: Fn(&mut ZipArchive<BufReader<File>>) -> Result<(Vec<(String, String)>, bool), RustySheetError>,
-    F: Fn(&mut ZipArchive<BufReader<File>>, bool) -> Result<Vec<CellType>, RustySheetError>,
+    W: Fn(&mut ZipArchive<UnifiedReader>) -> Result<(Vec<(String, String)>, bool), RustySheetError>,
+    F: Fn(&mut ZipArchive<UnifiedReader>, bool) -> Result<Vec<CellType>, RustySheetError>,
 {
-    let mut file_reader = BufReader::new(File::open(Path::new(file_name))?);
-    if is_password_protected(&mut file_reader) {
+    // Open file from local path or remote URL
+    let mut reader = open_remote_file(file_name)?;
+    
+    // Check if password protected
+    if is_password_protected(&mut reader) {
         Err(SpreadsheetError::SpreadsheetPasswordProtectedError(file_name.to_owned()))?;
     }
 
-    let mut zip = ZipArchive::new(file_reader)?;
+    let mut zip = ZipArchive::new(reader)?;
     let (sheets, is_1904) = load_workbook(&mut zip)?;
     if sheets.is_empty() {
         Err(SpreadsheetError::SpreadsheetEmptyError(file_name.to_owned()))?
@@ -62,7 +63,7 @@ where
 ///
 /// # Returns
 /// Mapping of relationship IDs to worksheet paths
-pub(super) fn load_relationships(zip: &mut ZipArchive<BufReader<File>>, path: &str) -> Result<HashMap<String, String>, RustySheetError> {
+pub(super) fn load_relationships(zip: &mut ZipArchive<UnifiedReader>, path: &str) -> Result<HashMap<String, String>, RustySheetError> {
     let mut reader = zip.xml_reader(path)?
         .ok_or_else(|| SpreadsheetError::FileError(path.to_string()))?;
     let mut relationships: HashMap<String, String> = HashMap::new();
@@ -128,7 +129,7 @@ pub(crate) fn to_zip_path(path: Cow<'_, str>) -> String {
 ///
 /// # Returns
 /// `true` if the file contains an encrypted package, `false` otherwise
-fn is_password_protected(reader: &mut BufReader<File>) -> bool {
+fn is_password_protected(reader: &mut UnifiedReader) -> bool {
     if let Ok(cfb) = Cfb::new(reader) {
         cfb.exists("EncryptedPackage")
     } else {

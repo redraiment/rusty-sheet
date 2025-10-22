@@ -1,4 +1,5 @@
 use crate::error::RustySheetError;
+use crate::helpers::file_reader::UnifiedReader;
 use crate::helpers::xml::XmlAttributeHelper;
 use crate::helpers::xml::XmlNodeHelper;
 use crate::helpers::xml::XmlReader;
@@ -20,7 +21,6 @@ use quick_xml::name::QName;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs::File;
 use std::io::BufReader;
 use zip::read::ZipFile;
 use zip::ZipArchive;
@@ -45,7 +45,7 @@ pub(crate) struct XlsxSpreadsheet {
     /// File name of the spreadsheet
     pub(crate) name: String,
     /// ZIP archive containing the XLSX file contents
-    zip: ZipArchive<BufReader<File>>,
+    zip: ZipArchive<UnifiedReader>,
     /// Parsed number formats for cell type detection
     number_formats: Vec<CellType>,
     /// List of worksheets with (name, zip_path) pairs
@@ -233,7 +233,7 @@ impl Spreadsheet for XlsxSpreadsheet {
 ///
 /// # Returns
 /// Tuple of (worksheets, is_1904_date_system) where worksheets are (name, zip_path) pairs
-fn load_workbook(zip: &mut ZipArchive<BufReader<File>>) -> Result<(Vec<(String, String)>, bool), RustySheetError> {
+fn load_workbook(zip: &mut ZipArchive<UnifiedReader>) -> Result<(Vec<(String, String)>, bool), RustySheetError> {
     let relationships = load_relationships(zip, "xl/_rels/workbook.xml.rels")?;
     let mut reader = zip.xml_reader("xl/workbook.xml")?
         .ok_or_else(|| SpreadsheetError::FileError("xl/workbook.xml".to_string()))?;
@@ -278,7 +278,7 @@ fn load_workbook(zip: &mut ZipArchive<BufReader<File>>) -> Result<(Vec<(String, 
 ///
 /// # Returns
 /// Vector of CellType values indexed by style ID
-fn load_number_formats(zip: &mut ZipArchive<BufReader<File>>, is_1904: bool) -> Result<Vec<CellType>, RustySheetError> {
+fn load_number_formats(zip: &mut ZipArchive<UnifiedReader>, is_1904: bool) -> Result<Vec<CellType>, RustySheetError> {
     let mut reader = match zip.xml_reader("xl/styles.xml")? {
         Some(reader) => reader,
         None => return Ok(Vec::new()),
@@ -345,7 +345,7 @@ fn load_number_formats(zip: &mut ZipArchive<BufReader<File>>, is_1904: bool) -> 
 /// # Returns
 /// Extracted string value
 fn read_string_value(
-    reader: &mut XmlReader<BufReader<ZipFile<'_, BufReader<File>>>>,
+    reader: &mut XmlReader<BufReader<ZipFile<'_, UnifiedReader>>>,
     end_tag: QName,
     is_text_content: bool,
 ) -> Result<String, RustySheetError> {

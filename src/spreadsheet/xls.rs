@@ -2,6 +2,7 @@ use crate::error::ResultOptionChain;
 use crate::error::RustySheetError;
 use crate::helpers::biff8::Biff8Reader;
 use crate::helpers::cfb::Cfb;
+use crate::helpers::file_reader::open_remote_file;
 use crate::match_biff8_record;
 use crate::spreadsheet::cell::to_error_value;
 use crate::spreadsheet::cell::Cell;
@@ -15,8 +16,6 @@ use crate::spreadsheet::SpreadsheetError;
 use either::Either;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::BufReader;
 use thiserror::Error;
 
 // BIFF8 record type identifiers for Excel file parsing
@@ -73,8 +72,9 @@ impl XlsSpreadsheet {
     /// # Returns
     /// * `Result<XlsSpreadsheet, RustySheetError>` - Initialized spreadsheet or error
     pub(crate) fn open(file_name: &str) -> Result<XlsSpreadsheet, RustySheetError> {
-        let mut buf_reader = BufReader::new(File::open(file_name)?);
-        let cfb = Cfb::new(&mut buf_reader)?;
+        // Open file from local path or remote URL
+        let mut reader = open_remote_file(file_name)?;
+        let cfb = Cfb::new(&mut reader)?;
         let mut reader = cfb.read("Workbook")
             .ok_none_else(|| cfb.read("Book"))?
             .map(Biff8Reader::new)
