@@ -11,6 +11,7 @@ use crate::database::bridge::ValueBridge;
 use crate::database::column::ColumnType;
 use crate::database::range::Range;
 use crate::error::RustySheetError;
+use crate::helpers::reader::UnifiedReader;
 use duckdb::core::LogicalTypeHandle;
 use duckdb::core::LogicalTypeId;
 use duckdb::vtab::BindInfo;
@@ -113,12 +114,16 @@ impl Param<Vec<String>> for FilesParam {
             .map(|parameter| parameter.to_string())
             .collect::<Vec<_>>();
 
-        let files = wildcards.iter()
-            .map(|wildcard| glob(wildcard))
-            .filter_map(Result::ok)
-            .flat_map(|paths| paths.filter_map(Result::ok))
-            .map(|path| path.to_str().unwrap().to_string())
-            .collect::<Vec<_>>();
+        let mut files = Vec::<String>::new();
+        for wildcard in &wildcards {
+            if UnifiedReader::is_remote_url(&wildcard) {
+                files.push(wildcard.to_owned());
+            } else if let Ok(paths) = glob(&wildcard) {
+                for path in paths.filter_map(Result::ok) {
+                    files.push(path.to_str().unwrap().to_string());
+                }
+            }
+        }
         if files.is_empty() {
             Err(ExtensionError::FileWildcardError(wildcards.join(", ")))?
         }

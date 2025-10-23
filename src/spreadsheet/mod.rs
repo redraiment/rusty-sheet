@@ -1,6 +1,7 @@
 use crate::database::column::Column;
 use crate::database::column::ColumnType;
 use crate::database::table::Table;
+use crate::error::ResultMessage;
 use crate::error::RustySheetError;
 use crate::spreadsheet::cell::Cell;
 use crate::spreadsheet::cell::CellType;
@@ -14,7 +15,6 @@ use glob::Pattern;
 use sheet::Sheet;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use anyhow::Context;
 use thiserror::Error;
 
 pub(crate) mod cell;
@@ -192,7 +192,7 @@ pub(crate) fn open_spreadsheet(file_name: &str) -> Result<Box<dyn Spreadsheet + 
 pub(crate) fn open_spreadsheets(files: &Vec<String>, patterns: &Option<Vec<(Option<Pattern>, Pattern)>>) -> Result<Vec<(Box<dyn Spreadsheet + Send + Sync>, Option<Vec<Pattern>>)>, RustySheetError> {
     let spreadsheets = files
         .iter()
-        .map(|path| open_spreadsheet(path).with_context(|| path.to_owned()))
+        .map(|path| open_spreadsheet(path).with_prefix(path))
         .collect::<Result<Vec<_>, _>>()?;
     let spreadsheets = spreadsheets.into_iter().map(|spreadsheet| {
         let sheet_name_patterns = patterns.as_ref().map(|sheets| {

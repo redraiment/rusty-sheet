@@ -17,6 +17,7 @@
 - **类型安全**：内置数据类型验证和转换
 - **高级数据过滤**：跳过空行或在第一个空行处停止，实现高效数据处理
 - **高级模式匹配**：在批处理操作中支持多个通配符模式
+- **远程存储支持**：从远程 URL 读取电子表格，包括 HTTP、HTTPS、S3、Google Cloud Storage 和 Hugging Face 数据集
 
 ## 安装
 
@@ -115,6 +116,22 @@ SELECT * FROM read_sheet('data.xlsx',
 );
 ```
 
+#### 从远程 URL 读取
+
+```sql
+-- 从 HTTP/HTTPS URL 读取
+SELECT * FROM read_sheet('https://example.com/data.xlsx');
+
+-- 从 S3 存储桶读取
+SELECT * FROM read_sheet('s3://my-bucket/data.xlsx');
+
+-- 从 Google Cloud Storage 读取
+SELECT * FROM read_sheet('gs://my-bucket/data.xlsx');
+
+-- 从 Hugging Face 数据集读取
+SELECT * FROM read_sheet('hf://datasets/my-dataset/data.xlsx');
+```
+
 ### 在不读取完整数据的情况下分析列类型
 
 ```sql
@@ -137,6 +154,12 @@ SELECT * FROM read_sheets(['*.xls', '*.xlsx']);
 
 -- 读取不同扩展名的多种文件类型
 SELECT * FROM read_sheets(['*.xlsx', '*.ods', '*.et']);
+
+-- 从远程 URL 读取
+SELECT * FROM read_sheets(['https://example.com/data1.xlsx', 'https://example.com/data2.xlsx']);
+
+-- 混合本地和远程文件
+SELECT * FROM read_sheets(['local_data.xlsx', 'https://example.com/remote_data.xlsx']);
 ```
 
 #### 分析多个文件和工作表
@@ -194,7 +217,7 @@ SELECT * FROM read_sheet('data.xlsx', end_at_empty_row=true);
 
 **参数：**
 
-- **file_path**（必需）：电子表格文件路径（不支持通配符）
+- **file_path**（必需）：电子表格文件路径（不支持通配符）。支持本地文件和远程 URL（HTTP、HTTPS、S3、GS、HF）
 - **sheet**（可选，默认为第一个工作表）：工作表名称（支持通配符，如 `Sheet*`）
 - **range**（可选）：数据范围，格式为 `[起始列][起始行]:[结束列][结束行]`
 - **header**（可选，默认为 `true`）：第一行是否包含列标题
@@ -215,6 +238,12 @@ SELECT * FROM analyze_sheet('data.xlsx', range='A1:C10');
 
 -- 分析更多行以获得更好的类型推断
 SELECT * FROM analyze_sheet('data.xlsx', analyze_rows=50);
+
+-- 分析远程 URL
+SELECT * FROM analyze_sheet('https://example.com/data.xlsx');
+
+-- 分析 S3 文件
+SELECT * FROM analyze_sheet('s3://my-bucket/data.xlsx');
 ```
 
 ### analyze_sheets
@@ -223,7 +252,7 @@ SELECT * FROM analyze_sheet('data.xlsx', analyze_rows=50);
 
 **参数：**
 
-- **file_pattern**（必需）：支持通配符的文件路径模式（例如 `['*.xlsx']`、`['*.xls', '*.xlsx']`）
+- **file_pattern**（必需）：支持通配符的文件路径模式（例如 `['*.xlsx']`、`['*.xls', '*.xlsx']`）。也支持远程 URL（HTTP、HTTPS、S3、GS、HF）
 - **sheets**（可选）：工作表名称列表（支持通配符和文件特定模式，如 `['Sheet*']`、`['*.xlsx=Sheet*']`）
 - **range**（可选）：数据范围，格式为 `[起始列][起始行]:[结束列][结束行]`
 - **header**（可选，默认为 `true`）：第一行是否包含列标题
@@ -247,6 +276,12 @@ SELECT * FROM analyze_sheets(['*.xlsx'], sheets=['*.xlsx=Sheet*']);
 
 -- 分析多种文件类型
 SELECT * FROM analyze_sheets(['*.xlsx', '*.ods']);
+
+-- 分析远程 URL
+SELECT * FROM analyze_sheets(['https://example.com/data1.xlsx', 'https://example.com/data2.xlsx']);
+
+-- 分析混合本地和远程文件
+SELECT * FROM analyze_sheets(['local_data.xlsx', 'https://example.com/remote_data.xlsx']);
 ```
 
 ### read_sheet
@@ -255,7 +290,7 @@ SELECT * FROM analyze_sheets(['*.xlsx', '*.ods']);
 
 **参数：**
 
-- **file_path**（必需）：电子表格文件路径（不支持通配符）
+- **file_path**（必需）：电子表格文件路径（不支持通配符）。支持本地文件和远程 URL（HTTP、HTTPS、S3、GS、HF）
 - **sheet**（可选，默认第一个工作表）：工作表名称（支持通配符如 `Sheet*`）
 - **range**（可选）：数据范围，格式为 `[起始列][起始行]:[结束列][结束行]`
 - **header**（可选，默认为 `true`）：第一行是否包含列标题
@@ -284,6 +319,15 @@ SELECT * FROM read_sheet('data.xlsx', end_at_empty_row=true);
 
 -- 将错误处理为 NULL
 SELECT * FROM read_sheet('messy_data.xlsx', error_as_null=true);
+
+-- 从远程 URL 读取
+SELECT * FROM read_sheet('https://example.com/data.xlsx');
+
+-- 从 S3 读取特定工作表
+SELECT * FROM read_sheet('s3://my-bucket/data.xlsx', sheet='Sheet2');
+
+-- 从 Google Cloud Storage 读取指定范围
+SELECT * FROM read_sheet('gs://my-bucket/data.xlsx', range='A1:C10');
 ```
 
 ### read_sheets
@@ -294,7 +338,7 @@ SELECT * FROM read_sheet('messy_data.xlsx', error_as_null=true);
 
 **参数：**
 
-- **file_pattern**（必需）：支持通配符的文件路径模式（例如 `['*.xlsx']`、`['*.xls', '*.xlsx']`）
+- **file_pattern**（必需）：支持通配符的文件路径模式（例如 `['*.xlsx']`、`['*.xls', '*.xlsx']`）。也支持远程 URL（HTTP、HTTPS、S3、GS、HF）
 - **sheets**（可选）：工作表名称列表（支持通配符和文件特定模式，如 `['Sheet*']`、`['*.xlsx=Sheet*']`）
 - **range**（可选）：数据范围，格式为 `[起始列][起始行]:[结束列][结束行]`
 - **header**（可选，默认 `true`）：第一行是否包含列标题
@@ -345,6 +389,15 @@ SELECT * FROM read_sheets(['*.xlsx'],
   sheets=['Sheet1', 'Sheet2'],
   union_by_name=true
 );
+
+-- 从远程 URL 读取
+SELECT * FROM read_sheets(['https://example.com/data1.xlsx', 'https://example.com/data2.xlsx']);
+
+-- 混合本地和远程文件
+SELECT * FROM read_sheets(['local_data.xlsx', 's3://my-bucket/remote_data.xlsx']);
+
+-- 从多个云存储提供商读取
+SELECT * FROM read_sheets(['s3://bucket1/data.xlsx', 'gs://bucket2/data.xlsx']);
 ```
 
 ### 支持的数据类型

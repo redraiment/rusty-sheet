@@ -2,7 +2,7 @@ use crate::error::ResultOptionChain;
 use crate::error::RustySheetError;
 use crate::helpers::biff8::Biff8Reader;
 use crate::helpers::cfb::Cfb;
-use crate::helpers::file_reader::open_remote_file;
+use crate::helpers::reader::UnifiedReader;
 use crate::match_biff8_record;
 use crate::spreadsheet::cell::to_error_value;
 use crate::spreadsheet::cell::Cell;
@@ -73,7 +73,7 @@ impl XlsSpreadsheet {
     /// * `Result<XlsSpreadsheet, RustySheetError>` - Initialized spreadsheet or error
     pub(crate) fn open(file_name: &str) -> Result<XlsSpreadsheet, RustySheetError> {
         // Open file from local path or remote URL
-        let mut reader = open_remote_file(file_name)?;
+        let mut reader = UnifiedReader::new(file_name)?;
         let cfb = Cfb::new(&mut reader)?;
         let mut reader = cfb.read("Workbook")
             .ok_none_else(|| cfb.read("Book"))?

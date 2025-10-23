@@ -24,6 +24,9 @@ const MAX_REG_SECT: usize = 0xFFFFFFFB;
 /// Errors specific to Compound File Binary format parsing
 #[derive(Error, Debug)]
 pub(crate) enum CfbError {
+    #[error("The file is corrupted or has an invalid CFB structure")]
+    FileFormatError,
+
     #[error("Invalid OLE signature (not an office document?)")]
     OleSignatureError,
 
@@ -60,6 +63,9 @@ impl Cfb {
     pub(crate) fn new<RS: Read + Seek>(reader: &mut RS) -> Result<Cfb, RustySheetError> {
         // Load the entire CFB content into memory
         let size = reader.seek(SeekFrom::End(0))?;
+        if size < 512 {
+            Err(CfbError::FileFormatError)?;
+        }
         reader.seek(SeekFrom::Start(0))?;
         let mut data: Vec<u8> = vec![0u8; size as usize];
         reader.read_exact(&mut data)?;

@@ -1,5 +1,5 @@
 use crate::error::RustySheetError;
-use crate::helpers::file_reader::{UnifiedReader, open_remote_file};
+use crate::helpers::reader::UnifiedReader;
 use crate::helpers::xml::XmlNodeHelper;
 use crate::helpers::xml::XmlTextContextHelper;
 use crate::helpers::zip::ZipHelper;
@@ -64,7 +64,7 @@ impl OdsSpreadsheet {
     /// * `Result<Self, RustySheetError>` - ODS spreadsheet instance or error
     pub(crate) fn open(file_name: &str) -> Result<Self, RustySheetError> {
         // Open file from local path or remote URL
-        let reader = open_remote_file(file_name)?;
+        let reader = UnifiedReader::new(file_name)?;
         let mut zip = ZipArchive::new(reader)?;
         check_mime(&mut zip)?;
         if is_password_protected(&mut zip)? {

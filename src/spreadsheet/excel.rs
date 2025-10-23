@@ -1,7 +1,7 @@
 //! Microsoft Office Excel Helpers
 use crate::error::RustySheetError;
 use crate::helpers::cfb::Cfb;
-use crate::helpers::file_reader::{UnifiedReader, open_remote_file};
+use crate::helpers::reader::UnifiedReader;
 use crate::helpers::xml::XmlNodeHelper;
 use crate::helpers::zip::ZipHelper;
 use crate::match_xml_events;
@@ -38,7 +38,7 @@ where
     F: Fn(&mut ZipArchive<UnifiedReader>, bool) -> Result<Vec<CellType>, RustySheetError>,
 {
     // Open file from local path or remote URL
-    let mut reader = open_remote_file(file_name)?;
+    let mut reader = UnifiedReader::new(file_name)?;
     
     // Check if password protected
     if is_password_protected(&mut reader) {

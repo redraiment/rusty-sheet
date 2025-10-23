@@ -16,6 +16,7 @@ A DuckDB extension that enables reading Excel, WPS, and OpenDocument spreadsheet
 - **Error Handling**: Configurable behavior for parsing errors with precise cell location and file name reporting
 - **Type Safety**: Built-in data type validation and conversion
 - **Advanced Data Filtering**: Skip empty rows or stop at first empty row for efficient data processing
+- **Remote Storage Support**: Read spreadsheets from remote URLs including HTTP, HTTPS, S3, Google Cloud Storage, and Hugging Face datasets
 
 ## Installation
 
@@ -114,6 +115,22 @@ SELECT * FROM read_sheet('data.xlsx',
 );
 ```
 
+#### Read from remote URL
+
+```sql
+-- Read from HTTP/HTTPS URL
+SELECT * FROM read_sheet('https://example.com/data.xlsx');
+
+-- Read from S3 bucket
+SELECT * FROM read_sheet('s3://my-bucket/data.xlsx');
+
+-- Read from Google Cloud Storage
+SELECT * FROM read_sheet('gs://my-bucket/data.xlsx');
+
+-- Read from Hugging Face dataset
+SELECT * FROM read_sheet('hf://datasets/my-dataset/data.xlsx');
+```
+
 ### Analyze column types without reading full data
 
 ```sql
@@ -136,6 +153,12 @@ SELECT * FROM read_sheets(['*.xls', '*.xlsx']);
 
 -- Read multiple file types with different extensions
 SELECT * FROM read_sheets(['*.xlsx', '*.ods', '*.et']);
+
+-- Read from remote URLs
+SELECT * FROM read_sheets(['https://example.com/data1.xlsx', 'https://example.com/data2.xlsx']);
+
+-- Mix local and remote files
+SELECT * FROM read_sheets(['local_data.xlsx', 'https://example.com/remote_data.xlsx']);
 ```
 
 #### Analyze multiple files and worksheets
@@ -193,7 +216,7 @@ Analyzes the column structure of a single worksheet in a single file.
 
 **Parameters:**
 
-- **file_path** (required): Path to the spreadsheet file (no wildcard support)
+- **file_path** (required): Path to the spreadsheet file (no wildcard support). Supports local files and remote URLs (HTTP, HTTPS, S3, GS, HF)
 - **sheet** (optional, default first sheet): Worksheet name (supports wildcards like `Sheet*`)
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
@@ -214,6 +237,12 @@ SELECT * FROM analyze_sheet('data.xlsx', range='A1:C10');
 
 -- Analyze more rows for better type inference
 SELECT * FROM analyze_sheet('data.xlsx', analyze_rows=50);
+
+-- Analyze remote URL
+SELECT * FROM analyze_sheet('https://example.com/data.xlsx');
+
+-- Analyze S3 file
+SELECT * FROM analyze_sheet('s3://my-bucket/data.xlsx');
 ```
 
 ### analyze_sheets
@@ -222,7 +251,7 @@ Analyzes column structures of multiple worksheets across multiple files with wil
 
 **Parameters:**
 
-- **file_pattern** (required): File path pattern(s) with wildcard support (e.g., `['*.xlsx']`, `['*.xls', '*.xlsx']`)
+- **file_pattern** (required): File path pattern(s) with wildcard support (e.g., `['*.xlsx']`, `['*.xls', '*.xlsx']`). Also supports remote URLs (HTTP, HTTPS, S3, GS, HF)
 - **sheets** (optional): List of worksheet names (supports wildcards and file-specific patterns like `['Sheet*']`, `['*.xlsx=Sheet*']`)
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
@@ -246,6 +275,12 @@ SELECT * FROM analyze_sheets(['*.xlsx'], sheets=['*.xlsx=Sheet*']);
 
 -- Analyze multiple file types
 SELECT * FROM analyze_sheets(['*.xlsx', '*.ods']);
+
+-- Analyze remote URLs
+SELECT * FROM analyze_sheets(['https://example.com/data1.xlsx', 'https://example.com/data2.xlsx']);
+
+-- Analyze mixed local and remote files
+SELECT * FROM analyze_sheets(['local_data.xlsx', 'https://example.com/remote_data.xlsx']);
 ```
 
 ### read_sheet
@@ -254,7 +289,7 @@ Reads data from a single worksheet in a single file.
 
 **Parameters:**
 
-- **file_path** (required): Path to the spreadsheet file (no wildcard support)
+- **file_path** (required): Path to the spreadsheet file (no wildcard support). Supports local files and remote URLs (HTTP, HTTPS, S3, GS, HF)
 - **sheet** (optional, default first sheet): Worksheet name (supports wildcards like `Sheet*`)
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
@@ -283,6 +318,15 @@ SELECT * FROM read_sheet('data.xlsx', end_at_empty_row=true);
 
 -- Handle errors as NULL
 SELECT * FROM read_sheet('messy_data.xlsx', error_as_null=true);
+
+-- Read from remote URL
+SELECT * FROM read_sheet('https://example.com/data.xlsx');
+
+-- Read from S3 with specific worksheet
+SELECT * FROM read_sheet('s3://my-bucket/data.xlsx', sheet='Sheet2');
+
+-- Read from Google Cloud Storage with range
+SELECT * FROM read_sheet('gs://my-bucket/data.xlsx', range='A1:C10');
 ```
 
 ### read_sheets
@@ -293,7 +337,7 @@ Reads data from multiple worksheets across multiple files with wildcard pattern 
 
 **Parameters:**
 
-- **file_pattern** (required): File path pattern(s) with wildcard support (e.g., `['*.xlsx']`, `['*.xls', '*.xlsx']`)
+- **file_pattern** (required): File path pattern(s) with wildcard support (e.g., `['*.xlsx']`, `['*.xls', '*.xlsx']`). Also supports remote URLs (HTTP, HTTPS, S3, GS, HF)
 - **sheets** (optional): List of worksheet names (supports wildcards and file-specific patterns like `['Sheet*']`, `['*.xlsx=Sheet*']`)
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
@@ -344,6 +388,15 @@ SELECT * FROM read_sheets(['*.xlsx'],
   sheets=['Sheet1', 'Sheet2'],
   union_by_name=true
 );
+
+-- Read from remote URLs
+SELECT * FROM read_sheets(['https://example.com/data1.xlsx', 'https://example.com/data2.xlsx']);
+
+-- Mix local and remote files
+SELECT * FROM read_sheets(['local_data.xlsx', 's3://my-bucket/remote_data.xlsx']);
+
+-- Read from multiple cloud storage providers
+SELECT * FROM read_sheets(['s3://bucket1/data.xlsx', 'gs://bucket2/data.xlsx']);
 ```
 
 ### Supported Data Types

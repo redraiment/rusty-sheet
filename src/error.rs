@@ -31,6 +31,9 @@ pub(crate) enum RustySheetError {
 
     // Third-party library errors
     #[error("{0}")]
+    DuckDBError(#[from] duckdb::Error),
+
+    #[error("{0}")]
     ZipError(#[from] zip::result::ZipError),
 
     #[error("{0}")]
@@ -54,6 +57,9 @@ pub(crate) enum RustySheetError {
 
     #[error("{0}")]
     Biff12HelperError(#[from] crate::helpers::biff12::Biff12Error),
+
+    #[error("{0}")]
+    UnifiedReaderError(#[from] crate::helpers::reader::UnifiedReaderError),
 
     // Spreadsheet module errors
     #[error("{0}")]
@@ -83,10 +89,10 @@ pub(crate) trait ResultOptionChain {
         F: FnOnce() -> Self;
 }
 
-impl <T, E> ResultOptionChain for Result<Option<T>, E> {
+impl<T, E> ResultOptionChain for Result<Option<T>, E> {
     fn ok_none_else<F>(self, f: F) -> Self
     where
-        F: FnOnce() -> Self
+        F: FnOnce() -> Self,
     {
         match self {
             Ok(None) => f(),
@@ -99,7 +105,7 @@ pub(crate) trait ResultMessage {
     fn with_prefix(self, message: &str) -> Self;
 }
 
-impl <T> ResultMessage for Result<T, RustySheetError> {
+impl<T> ResultMessage for Result<T, RustySheetError> {
     fn with_prefix(self, message: &str) -> Self {
         self.map_err(|e| RustySheetError::WithContextError(format!("{}: {}", message, e)))
     }
