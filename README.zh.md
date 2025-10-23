@@ -581,3 +581,4 @@ make test_debug
 
 * 基于 [DuckDB Rust 扩展模板](https://github.com/duckdb/extension-template-rs) 构建
 * 灵感来源于 DuckDB 让数据分析更易用的承诺
+* 感谢 [abelcha](https://github.com/abelcha) 帮助实现从远程读取文件的功能

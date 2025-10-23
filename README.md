@@ -580,3 +580,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 * Built on the [DuckDB Rust extension template](https://github.com/duckdb/extension-template-rs)
 * Inspired by DuckDB's commitment to making data analysis more accessible
+* Thanks to [abelcha](https://github.com/abelcha) for helping implement remote file reading functionality
