@@ -1,4 +1,5 @@
 use crate::error::RustySheetError;
+use crate::helpers::file_reader::{UnifiedReader, open_remote_file};
 use crate::helpers::xml::XmlNodeHelper;
 use crate::helpers::xml::XmlTextContextHelper;
 use crate::helpers::zip::ZipHelper;
@@ -14,10 +15,7 @@ use quick_xml::events::Event;
 use quick_xml::name::QName;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::BufReader;
 use std::io::Read;
-use std::path::Path;
 use thiserror::Error;
 use zip::ZipArchive;
 
@@ -53,7 +51,7 @@ pub(crate) struct OdsSpreadsheet {
     /// Name of the ODS file
     pub(crate) name: String,
     /// ZIP archive containing the ODS file contents
-    zip: ZipArchive<BufReader<File>>,
+    zip: ZipArchive<UnifiedReader>,
 }
 
 impl OdsSpreadsheet {
@@ -65,8 +63,9 @@ impl OdsSpreadsheet {
     /// # Returns
     /// * `Result<Self, RustySheetError>` - ODS spreadsheet instance or error
     pub(crate) fn open(file_name: &str) -> Result<Self, RustySheetError> {
-        let file = File::open(Path::new(file_name))?;
-        let mut zip = ZipArchive::new(BufReader::new(file))?;
+        // Open file from local path or remote URL
+        let reader = open_remote_file(file_name)?;
+        let mut zip = ZipArchive::new(reader)?;
         check_mime(&mut zip)?;
         if is_password_protected(&mut zip)? {
             Err(SpreadsheetError::SpreadsheetPasswordProtectedError(file_name.to_owned()))?;
@@ -280,7 +279,7 @@ impl Spreadsheet for OdsSpreadsheet {
 ///
 /// # Returns
 /// * `Result<(), RustySheetError>` - Success or MIME type error
-fn check_mime(zip: &mut ZipArchive<BufReader<File>>) -> Result<(), RustySheetError> {
+fn check_mime(zip: &mut ZipArchive<UnifiedReader>) -> Result<(), RustySheetError> {
     if let Some(file) = &mut zip.file("mimetype")? {
         let mut buffer = [0u8; 46];
         file.read_exact(&mut buffer)?;
@@ -298,7 +297,7 @@ fn check_mime(zip: &mut ZipArchive<BufReader<File>>) -> Result<(), RustySheetErr
 ///
 /// # Returns
 /// * `Result<bool, RustySheetError>` - True if password protected, false otherwise
-fn is_password_protected(zip: &mut ZipArchive<BufReader<File>>) -> Result<bool, RustySheetError> {
+fn is_password_protected(zip: &mut ZipArchive<UnifiedReader>) -> Result<bool, RustySheetError> {
     let mut reader = zip
         .xml_reader("META-INF/manifest.xml")?
         .expect("META-INF/manifest.xml");

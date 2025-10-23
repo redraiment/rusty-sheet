@@ -1,5 +1,6 @@
 use crate::error::RustySheetError;
 use crate::helpers::biff12::Biff12Reader;
+use crate::helpers::file_reader::UnifiedReader;
 use crate::helpers::zip::ZipHelper;
 use crate::match_biff12_record;
 use crate::spreadsheet::cell::to_error_value;
@@ -15,7 +16,6 @@ use crate::spreadsheet::SpreadsheetError;
 use either::Either;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs::File;
 use std::io::BufReader;
 use zip::read::ZipFile;
 use zip::ZipArchive;
@@ -81,7 +81,7 @@ pub(crate) struct XlsbSpreadsheet {
     /// Original file name of the spreadsheet
     pub(crate) name: String,
     /// ZIP archive containing the XLSB file structure
-    zip: ZipArchive<BufReader<File>>,
+    zip: ZipArchive<UnifiedReader>,
     /// Pre-parsed number formats for cell type detection
     number_formats: Vec<CellType>,
     /// List of worksheet names and their corresponding ZIP file paths
@@ -266,7 +266,7 @@ impl Spreadsheet for XlsbSpreadsheet {
 /// * `Result<(Vec<(String, String)>, bool)>` - Tuple containing:
 ///   - Vector of worksheet names and their file paths
 ///   - Boolean indicating if 1904 date system is used
-fn load_workbook(zip: &mut ZipArchive<BufReader<File>>) -> Result<(Vec<(String, String)>, bool), RustySheetError> {
+fn load_workbook(zip: &mut ZipArchive<UnifiedReader>) -> Result<(Vec<(String, String)>, bool), RustySheetError> {
     let relationships = load_relationships(zip, "xl/_rels/workbook.bin.rels")?;
     let mut reader = zip.biff_reader("xl/workbook.bin")?
         .ok_or_else(|| SpreadsheetError::FileError("xl/workbook.bin".to_string()))?;
@@ -299,7 +299,7 @@ fn load_workbook(zip: &mut ZipArchive<BufReader<File>>) -> Result<(Vec<(String, 
 ///
 /// # Returns
 /// * `Result<Vec<CellType>>` - Vector of cell types for format indexes
-fn load_number_formats(zip: &mut ZipArchive<BufReader<File>>, is_1904: bool) -> Result<Vec<CellType>, RustySheetError> {
+fn load_number_formats(zip: &mut ZipArchive<UnifiedReader>, is_1904: bool) -> Result<Vec<CellType>, RustySheetError> {
     let mut reader = match zip.biff_reader("xl/styles.bin")? {
         Some(reader) => reader,
         None => return Ok(Vec::new()),
@@ -341,7 +341,7 @@ fn load_number_formats(zip: &mut ZipArchive<BufReader<File>>, is_1904: bool) -> 
 /// * `(Either<CellType, usize>, String)` - Tuple containing:
 ///   - Cell type (boolean) and format index
 ///   - String representation of boolean value ("1" or "0")
-fn read_bool_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>>) -> (Either<CellType, usize>, String) {
+fn read_bool_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> (Either<CellType, usize>, String) {
     let value = if reader.buffer[8] != 0 { "1" } else { "0" };
     (Either::Left(CellType::Boolean), value.to_owned())
 }
@@ -355,7 +355,7 @@ fn read_bool_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>>
 /// * `(Either<CellType, usize>, String)` - Tuple containing:
 ///   - Format index reference and cell type
 ///   - String representation of numeric value
-fn read_real_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>>) -> (Either<CellType, usize>, String) {
+fn read_real_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> (Either<CellType, usize>, String) {
     let index = reader.get_style(4);
     let value = reader.get_f64(8).to_string();
     (Either::Right(index), value)
@@ -370,7 +370,7 @@ fn read_real_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>>
 /// * `Result<(Either<CellType, usize>, String)>` - Tuple containing:
 ///   - Cell type (inline string) and format index
 ///   - String value extracted from cell
-fn read_st_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>>) -> Result<(Either<CellType, usize>, String), RustySheetError> {
+fn read_st_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> Result<(Either<CellType, usize>, String), RustySheetError> {
     let value = reader.get_str(8)?.to_string();
     Ok((Either::Left(CellType::InlineString), value))
 }
@@ -384,7 +384,7 @@ fn read_st_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>>) 
 /// * `Result<(Either<CellType, usize>, String)>` - Tuple containing:
 ///   - Cell type (inline string) and format index
 ///   - String value extracted from rich text cell
-fn read_rich_string_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>>) -> Result<(Either<CellType, usize>, String), RustySheetError> {
+fn read_rich_string_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> Result<(Either<CellType, usize>, String), RustySheetError> {
     let value = reader.get_str(8 + 1)?.to_string();
     Ok((Either::Left(CellType::InlineString), value))
 }
@@ -398,7 +398,7 @@ fn read_rich_string_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<F
 /// * `(Either<CellType, usize>, String)` - Tuple containing:
 ///   - Cell type (shared string) and format index
 ///   - String representation of shared string index
-fn read_shared_string_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>>) -> (Either<CellType, usize>, String) {
+fn read_shared_string_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> (Either<CellType, usize>, String) {
     let value = reader.get_usize(8).to_string();
     (Either::Left(CellType::SharedString), value)
 }
@@ -412,7 +412,7 @@ fn read_shared_string_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader
 /// * `(Either<CellType, usize>, String)` - Tuple containing:
 ///   - Cell type (error) and format index
 ///   - String representation of error value
-fn read_error_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>>) -> (Either<CellType, usize>, String) {
+fn read_error_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> (Either<CellType, usize>, String) {
     let value = to_error_value(reader.buffer[8]).to_owned();
     (Either::Left(CellType::Error), value)
 }
@@ -429,7 +429,7 @@ fn read_error_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>
 /// * `(Either<CellType, usize>, String)` - Tuple containing:
 ///   - Format index reference and cell type
 ///   - String representation of decompressed numeric value
-fn read_rk_cell(reader: &mut Biff12Reader<BufReader<ZipFile<BufReader<File>>>>) -> (Either<CellType, usize>, String) {
+fn read_rk_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> (Either<CellType, usize>, String) {
     let index = reader.get_style(4);
     let is_percentage = (reader.buffer[8] & 0x01) != 0;
     let is_integer = (reader.buffer[8] & 0x02) != 0;
