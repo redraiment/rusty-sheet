@@ -130,6 +130,13 @@ SELECT * FROM read_sheet('gs://my-bucket/data.xlsx');
 
 -- 从 Hugging Face 数据集读取
 SELECT * FROM read_sheet('hf://datasets/my-dataset/data.xlsx');
+
+-- 自定义 HTTP 头信息
+CREATE PERSISTENT SECRET http_auth ( -- 必须是持久化的SECRET
+  TYPE HTTP,
+  BEARER_TOKEN 'Hello world!'
+);
+SELECT * FROM read_sheet('https://example.com/data.xlsx');
 ```
 
 ### 在不读取完整数据的情况下分析列类型

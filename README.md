@@ -129,6 +129,13 @@ SELECT * FROM read_sheet('gs://my-bucket/data.xlsx');
 
 -- Read from Hugging Face dataset
 SELECT * FROM read_sheet('hf://datasets/my-dataset/data.xlsx');
+
+-- With custom HTTP headers
+CREATE PERSISTENT SECRET http_auth ( -- Must be a persistent SECRET
+  TYPE HTTP,
+  BEARER_TOKEN 'Hello world!'
+);
+SELECT * FROM read_sheet('https://example.com/data.xlsx');
 ```
 
 ### Analyze column types without reading full data
