@@ -171,8 +171,9 @@ pub(crate) trait Spreadsheet {
 /// Automatically detects the file format from the extension and returns
 /// the appropriate spreadsheet implementation (XLSX, XLS, XLSB, or ODS).
 pub(crate) fn open_spreadsheet(file_name: &str) -> Result<Box<dyn Spreadsheet + Send + Sync>, RustySheetError> {
-    let extension = if let Some(index) = file_name.rfind('.') {
-        &file_name.to_ascii_lowercase()[index + 1..]
+    let uri = file_name.find('?').map(|index| &file_name[0..index]).unwrap_or(file_name);
+    let extension = if let Some(index) = uri.rfind('.') {
+        &uri.to_ascii_lowercase()[index + 1..]
     } else {
         ""
     };

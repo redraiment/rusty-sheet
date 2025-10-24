@@ -33,8 +33,8 @@ const TAG_FORMAT_INDEX: QName = QName(b"xf");         // Individual cell format 
 const TAG_SHARED_STRING_ITEM: QName = QName(b"si");   // Shared string table item
 const TAG_PHONETIC_TEXT: QName = QName(b"rPh");       // Phonetic text for Asian languages
 const TAG_TEXT: QName = QName(b"t");                  // Text content within strings
-const TAG_WORKBOOK_PROPERTIES: QName = QName(b"workbookPr"); // Workbook properties
-const TAG_SHEET: QName = QName(b"sheet");             // Worksheet definition
+const TAG_WORKBOOK_PROPERTIES: &[u8] = b"workbookPr"; // Workbook properties
+const TAG_SHEET: &[u8] = b"sheet";             // Worksheet definition
 const TAG_ROW: QName = QName(b"row");                 // Row in worksheet
 const TAG_CELL: QName = QName(b"c");                  // Cell in worksheet
 const TAG_INLINE_STRING: QName = QName(b"is");        // Inline string value
@@ -240,7 +240,7 @@ fn load_workbook(zip: &mut ZipArchive<UnifiedReader>) -> Result<(Vec<(String, St
     let mut sheets: Vec<(String, String)> = Vec::new();
     let mut is_1904 = false;
     match_xml_events!(reader => {
-        Event::Start(event) if event.name() == TAG_SHEET => {
+        Event::Start(event) if event.local_name().as_ref() == TAG_SHEET => {
             let mut name = None::<Cow<str>>;
             let mut id = None::<Cow<str>>;
             for result in event.attributes() {
@@ -258,7 +258,7 @@ fn load_workbook(zip: &mut ZipArchive<UnifiedReader>) -> Result<(Vec<(String, St
                 }
             }
         }
-        Event::Start(event) if event.name() == TAG_WORKBOOK_PROPERTIES => {
+        Event::Start(event) if event.local_name().as_ref() == TAG_WORKBOOK_PROPERTIES => {
             is_1904 = event.get_attribute_value("date1904")?
                 .map(|value| value.eq("1") || value.eq("true"))
                 .unwrap_or(false);

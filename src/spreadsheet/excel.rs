@@ -8,13 +8,12 @@ use crate::match_xml_events;
 use crate::spreadsheet::cell::CellType;
 use crate::spreadsheet::SpreadsheetError;
 use quick_xml::events::Event;
-use quick_xml::name::QName;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use zip::ZipArchive;
 
 /// XML tag name for relationship elements in Excel files
-const TAG_RELATIONSHIP: QName = QName(b"Relationship");
+const TAG_RELATIONSHIP: &[u8] = b"Relationship";
 
 /// Opens an Excel file and loads its contents
 ///
@@ -68,7 +67,7 @@ pub(super) fn load_relationships(zip: &mut ZipArchive<UnifiedReader>, path: &str
         .ok_or_else(|| SpreadsheetError::FileError(path.to_string()))?;
     let mut relationships: HashMap<String, String> = HashMap::new();
     match_xml_events!(reader => {
-        Event::Start(event) if event.name() == TAG_RELATIONSHIP => {
+        Event::Start(event) if event.local_name().as_ref() == TAG_RELATIONSHIP => {
             let id = event.get_attribute_value("Id")?;
             let kind = event.get_attribute_value("Type")?;
             let target = event.get_attribute_value("Target")?;
