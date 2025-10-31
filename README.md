@@ -100,6 +100,15 @@ SELECT * FROM read_sheet('data.xlsx',
 );
 ```
 
+#### Override all column types using wildcard
+
+```sql
+-- Set all columns to VARCHAR type
+SELECT * FROM read_sheet('data.xlsx',
+  columns={'*': 'VARCHAR'}
+);
+```
+
 #### Read specific data range (Excel-style notation)
 
 ```sql
@@ -112,6 +121,12 @@ SELECT * FROM read_sheet('data.xlsx', range='A2:E100');
 SELECT * FROM read_sheet('data.xlsx',
   header=false,
   columns={'A': 'varchar', 'B': 'bigint'}
+);
+
+-- Set all columns to VARCHAR when reading without headers
+SELECT * FROM read_sheet('data.xlsx',
+  header=false,
+  columns={'*': 'VARCHAR'}
 );
 ```
 
@@ -300,6 +315,7 @@ Reads data from a single worksheet in a single file.
 - **sheet** (optional, default first sheet): Worksheet name (supports wildcards like `Sheet*`)
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
+- **columns** (optional): MAP of column name patterns to target types. Keys are wildcard patterns that match column names, values are type strings like `'VARCHAR'`, `'BIGINT'`, `'DOUBLE'`, etc.
 - **analyze_rows** (optional, default `10`): Number of rows to analyze for type inference
 - **error_as_null** (optional, default `false`): If true, convert parsing errors to NULL instead of failing
 - **skip_empty_rows** (optional, default `false`): Skip rows where all columns contain empty values
@@ -348,6 +364,7 @@ Reads data from multiple worksheets across multiple files with wildcard pattern 
 - **sheets** (optional): List of worksheet names (supports wildcards and file-specific patterns like `['Sheet*']`, `['*.xlsx=Sheet*']`)
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
+- **columns** (optional): MAP of column name patterns to target types. Keys are wildcard patterns that match column names, values are type strings like `'VARCHAR'`, `'BIGINT'`, `'DOUBLE'`, etc.
 - **analyze_rows** (optional, default `10`): Number of rows to analyze for type inference
 - **error_as_null** (optional, default `false`): If true, convert parsing errors to NULL instead of failing
 - **skip_empty_rows** (optional, default `false`): Skip rows where all columns contain empty values
