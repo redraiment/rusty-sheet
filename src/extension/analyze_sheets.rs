@@ -5,6 +5,7 @@ use crate::extension::ErrorAsNullParam;
 use crate::extension::FilesParam;
 use crate::extension::HeaderParam;
 use crate::extension::NamedParam;
+use crate::extension::NullsParam;
 use crate::extension::Param;
 use crate::extension::Range;
 use crate::extension::RangeParam;
@@ -20,6 +21,7 @@ use duckdb::vtab::InitInfo;
 use duckdb::vtab::TableFunctionInfo;
 use duckdb::vtab::VTab;
 use glob::Pattern;
+use std::collections::HashSet;
 use std::error::Error;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -36,6 +38,8 @@ struct AnalyzeSheetsParameters {
     header: Option<bool>,
     /// Number of rows to analyze for type detection (default: 10)
     analyze_rows: Option<usize>,
+    /// null literals (default: empty string)
+    nulls: Option<HashSet<String>>,
     /// Whether to convert errors to null values (default: false)
     error_as_null: Option<bool>,
 }
@@ -57,6 +61,7 @@ impl TryFrom<&BindInfo> for AnalyzeSheetsParameters {
             range: RangeParam::read(bind)?,
             header: HeaderParam::read(bind)?,
             analyze_rows: AnalyzeRowsParam::read(bind)?,
+            nulls: NullsParam::read(bind)?,
             error_as_null: ErrorAsNullParam::read(bind)?,
         })
     }
@@ -86,6 +91,7 @@ impl TryFrom<&AnalyzeSheetsParameters> for AnalyzeSheetsBindData {
             .map(|path| open_spreadsheet(path).with_prefix(path))
             .collect::<Result<Vec<_>, _>>()?;
         let header = parameters.header.unwrap_or(true);
+        let nulls = parameters.nulls.to_owned().unwrap_or(HashSet::from(["".to_string()]));
         for spreadsheet in &mut spreadsheets {
             let sheet_name_patterns = parameters.sheets.as_ref().map(|sheets| {
                 sheets.iter()
@@ -104,6 +110,7 @@ impl TryFrom<&AnalyzeSheetsParameters> for AnalyzeSheetsBindData {
                 sheet_limit: None,
                 range: parameters.range,
                 rows_limit: parameters.analyze_rows.or(Some(10)),
+                nulls: nulls.to_owned(),
                 error_as_null: parameters.error_as_null.unwrap_or(false),
                 skip_empty_rows: false,
                 end_at_empty_row: false,
@@ -233,6 +240,7 @@ impl VTab for AnalyzeSheetsTableFunction {
             RangeParam::definition(),
             HeaderParam::definition(),
             AnalyzeRowsParam::definition(),
+            NullsParam::definition(),
             ErrorAsNullParam::definition(),
         ])
     }

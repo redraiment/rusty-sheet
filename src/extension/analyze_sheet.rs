@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::error::ResultMessage;
 use crate::error::RustySheetError;
 use crate::extension::AnalyzeRowsParam;
@@ -5,6 +6,7 @@ use crate::extension::ErrorAsNullParam;
 use crate::extension::FileParam;
 use crate::extension::HeaderParam;
 use crate::extension::NamedParam;
+use crate::extension::NullsParam;
 use crate::extension::Param;
 use crate::extension::Range;
 use crate::extension::RangeParam;
@@ -36,6 +38,8 @@ struct AnalyzeSheetParameters {
     header: Option<bool>,
     /// Number of rows to analyze for type detection (default: 10)
     analyze_rows: Option<usize>,
+    /// null literals (default: empty string)
+    nulls: Option<HashSet<String>>,
     /// Whether to convert errors to null values (default: false)
     error_as_null: Option<bool>,
 }
@@ -51,6 +55,7 @@ impl TryFrom<&BindInfo> for AnalyzeSheetParameters {
             range: RangeParam::read(bind)?,
             header: HeaderParam::read(bind)?,
             analyze_rows: AnalyzeRowsParam::read(bind)?,
+            nulls: NullsParam::read(bind)?,
             error_as_null: ErrorAsNullParam::read(bind)?,
         })
     }
@@ -74,11 +79,13 @@ impl TryFrom<&AnalyzeSheetParameters> for AnalyzeSheetBindData {
             .as_ref()
             .map(|pattern| vec![pattern.to_owned()]);
         let header = parameters.header.unwrap_or(true);
+        let nulls = parameters.nulls.to_owned().unwrap_or(HashSet::from(["".to_string()]));
         for table in spreadsheet.analyze_sheets(header, &Criteria {
             sheet_name_patterns,
             sheet_limit: Some(1),
             range: parameters.range,
             rows_limit: parameters.analyze_rows.or(Some(10)),
+            nulls: nulls.to_owned(),
             error_as_null: parameters.error_as_null.unwrap_or(false),
             skip_empty_rows: false,
             end_at_empty_row: false,
@@ -168,6 +175,7 @@ impl VTab for AnalyzeSheetTableFunction {
             RangeParam::definition(),
             HeaderParam::definition(),
             AnalyzeRowsParam::definition(),
+            NullsParam::definition(),
             ErrorAsNullParam::definition(),
         ])
     }

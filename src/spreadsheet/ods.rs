@@ -218,7 +218,7 @@ impl Spreadsheet for OdsSpreadsheet {
                                     }
                                     last_row = Some(row);
                                     if kind != CellType::Error {
-                                        if !value.is_empty() {
+                                        if !criteria.nulls.contains(&value) {
                                             sheet.push(Cell {
                                                 row: row_number,
                                                 col: col_number,

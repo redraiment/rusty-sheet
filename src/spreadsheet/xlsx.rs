@@ -189,7 +189,7 @@ impl Spreadsheet for XlsxSpreadsheet {
                 Event::Start(event) if kind != CellType::Empty && event.name() == TAG_VALUE => {
                     value = read_string_value(&mut reader, TAG_VALUE, true)?;
                 }
-                Event::End(event) if kind != CellType::Empty && !value.is_empty() && event.name() == TAG_CELL => {
+                Event::End(event) if kind != CellType::Empty && !criteria.nulls.contains(&value) && event.name() == TAG_CELL => {
                     if kind != CellType::Error {
                         if let Some(last_row) = last_row {
                             if criteria.end_at_empty_row && ((sheet.is_empty() && last_row != row) || (!sheet.is_empty() && last_row + 1 < row)) {

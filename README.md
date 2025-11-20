@@ -20,7 +20,7 @@ A DuckDB extension that enables reading Excel, WPS, and OpenDocument spreadsheet
 
 ## Installation
 
-**DuckDB 1.4.1 or later is required** for community extension support.
+**DuckDB 1.4.2 or later is required** for community extension support.
 
 ### Community Installation (Recommended)
 
@@ -243,6 +243,7 @@ Analyzes the column structure of a single worksheet in a single file.
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
 - **analyze_rows** (optional, default `10`): Number of rows to analyze for type inference
+- **nulls** (optional, default `['']`): Array of string literals to treat as NULL values (e.g., `['', '--', 'N/A']`)
 - **error_as_null** (optional, default `false`): If true, convert parsing errors to NULL instead of failing
 
 **Examples:**
@@ -278,6 +279,7 @@ Analyzes column structures of multiple worksheets across multiple files with wil
 - **range** (optional): Data range in format `[start_col][start_row]:[end_col][end_row]`
 - **header** (optional, default `true`): Whether the first row contains column headers
 - **analyze_rows** (optional, default `10`): Number of rows to analyze for type inference
+- **nulls** (optional, default `['']`): Array of string literals to treat as NULL values (e.g., `['', '--', 'N/A']`)
 - **error_as_null** (optional, default `false`): If true, convert parsing errors to NULL instead of failing
 
 **Examples:**
@@ -317,6 +319,7 @@ Reads data from a single worksheet in a single file.
 - **header** (optional, default `true`): Whether the first row contains column headers
 - **columns** (optional): MAP of column name patterns to target types. Keys are wildcard patterns that match column names, values are type strings like `'VARCHAR'`, `'BIGINT'`, `'DOUBLE'`, etc.
 - **analyze_rows** (optional, default `10`): Number of rows to analyze for type inference
+- **nulls** (optional, default `['']`): Array of string literals to treat as NULL values (e.g., `['', '--', 'N/A']`)
 - **error_as_null** (optional, default `false`): If true, convert parsing errors to NULL instead of failing
 - **skip_empty_rows** (optional, default `false`): Skip rows where all columns contain empty values
 - **end_at_empty_row** (optional, default `false`): Stop reading at the first completely empty row
@@ -366,6 +369,7 @@ Reads data from multiple worksheets across multiple files with wildcard pattern 
 - **header** (optional, default `true`): Whether the first row contains column headers
 - **columns** (optional): MAP of column name patterns to target types. Keys are wildcard patterns that match column names, values are type strings like `'VARCHAR'`, `'BIGINT'`, `'DOUBLE'`, etc.
 - **analyze_rows** (optional, default `10`): Number of rows to analyze for type inference
+- **nulls** (optional, default `['']`): Array of string literals to treat as NULL values (e.g., `['', '--', 'N/A']`)
 - **error_as_null** (optional, default `false`): If true, convert parsing errors to NULL instead of failing
 - **skip_empty_rows** (optional, default `false`): Skip rows where all columns contain empty values
 - **end_at_empty_row** (optional, default `false`): Stop reading at the first completely empty row
@@ -558,7 +562,7 @@ Test with different DuckDB versions:
 
 ```bash
 make clean_all
-DUCKDB_TEST_VERSION=v1.4.1 make configure
+DUCKDB_TEST_VERSION=v1.4.2 make configure
 make debug
 make test_debug
 ```

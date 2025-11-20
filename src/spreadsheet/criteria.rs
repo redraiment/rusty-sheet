@@ -1,5 +1,6 @@
 use crate::database::range::Range;
 use glob::Pattern;
+use std::collections::HashSet;
 
 /// Criteria for filtering and selecting data from spreadsheets.
 #[derive(Clone, Debug)]
@@ -15,6 +16,9 @@ pub(crate) struct Criteria {
 
     /// Maximum number of rows to read per sheet.
     pub(crate) rows_limit: Option<usize>,
+
+    /// null literals (default: empty string)
+    pub(crate) nulls: HashSet<String>,
 
     /// Convert parsing errors to null values instead of failing.
     pub(crate) error_as_null: bool,

@@ -237,7 +237,7 @@ impl Spreadsheet for XlsSpreadsheet {
                                 Either::Right(index) => self.number_formats[index],
                             };
                             if kind != CellType::Error {
-                                if !value.is_empty() {
+                                if !criteria.nulls.contains(&value) {
                                     sheet.push(Cell {
                                         row,
                                         col,

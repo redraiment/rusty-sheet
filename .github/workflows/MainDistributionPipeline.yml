@@ -17,7 +17,7 @@ jobs:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@7b1ba0a5651e9fd85cf555f950d5f8bef88adf7e
     with:
-      duckdb_version: v1.4.1
+      duckdb_version: v1.4.2
       ci_tools_version: 7b1ba0a5651e9fd85cf555f950d5f8bef88adf7e
       extension_name: rusty_sheet
       extra_toolchains: rust;python3

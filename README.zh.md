@@ -21,7 +21,7 @@
 
 ## 安装
 
-**需要 DuckDB 1.4.1 或更高版本**以支持社区扩展。
+**需要 DuckDB 1.4.2 或更高版本**以支持社区扩展。
 
 ### 社区安装（推荐）
 
@@ -244,6 +244,7 @@ SELECT * FROM read_sheet('data.xlsx', end_at_empty_row=true);
 - **range**（可选）：数据范围，格式为 `[起始列][起始行]:[结束列][结束行]`
 - **header**（可选，默认为 `true`）：第一行是否包含列标题
 - **analyze_rows**（可选，默认为 `10`）：用于类型推断的分析行数
+- **nulls**（可选，默认 `['']`）：要视为空（NULL）值的字符串字面量数组（例如 `['', '--', 'N/A']`）
 - **error_as_null**（可选，默认为 `false`）：如果为 true，将解析错误转换为 NULL 而不是失败
 
 **示例：**
@@ -279,6 +280,7 @@ SELECT * FROM analyze_sheet('s3://my-bucket/data.xlsx');
 - **range**（可选）：数据范围，格式为 `[起始列][起始行]:[结束列][结束行]`
 - **header**（可选，默认为 `true`）：第一行是否包含列标题
 - **analyze_rows**（可选，默认为 `10`）：用于类型推断的分析行数
+- **nulls**（可选，默认 `['']`）：要视为空（NULL）值的字符串字面量数组（例如 `['', '--', 'N/A']`）
 - **error_as_null**（可选，默认为 `false`）：如果为 true，将解析错误转换为 NULL 而不是失败
 
 **示例：**
@@ -318,6 +320,7 @@ SELECT * FROM analyze_sheets(['local_data.xlsx', 'https://example.com/remote_dat
 - **header**（可选，默认为 `true`）：第一行是否包含列标题
 - **columns**（可选）：列名模式到目标类型的 MAP。键是匹配列名的通配符模式，值是类型字符串，如 `'VARCHAR'`、`'BIGINT'`、`'DOUBLE'` 等。
 - **analyze_rows**（可选，默认为 `10`）：用于类型推断的分析行数
+- **nulls**（可选，默认 `['']`）：要视为空（NULL）值的字符串字面量数组（例如 `['', '--', 'N/A']`）
 - **error_as_null**（可选，默认为 `false`）：如果为 true，将解析错误转换为 NULL 而不是失败
 - **skip_empty_rows**（可选，默认为 `false`）：跳过所有列都包含空值的行
 - **end_at_empty_row**（可选，默认为 `false`）：在第一个完全空白的行处停止读取
@@ -367,6 +370,7 @@ SELECT * FROM read_sheet('gs://my-bucket/data.xlsx', range='A1:C10');
 - **header**（可选，默认 `true`）：第一行是否包含列标题
 - **columns**（可选）：列名模式到目标类型的 MAP。键是匹配列名的通配符模式，值是类型字符串，如 `'VARCHAR'`、`'BIGINT'`、`'DOUBLE'` 等。
 - **analyze_rows**（可选，默认 `10`）：用于类型推断的分析行数
+- **nulls**（可选，默认 `['']`）：要视为空（NULL）值的字符串字面量数组（例如 `['', '--', 'N/A']`）
 - **error_as_null**（可选，默认 `false`）：如果为 true，将解析错误转换为 NULL 而不是失败
 - **skip_empty_rows**（可选，默认 `false`）：跳过所有列都包含空值的行
 - **end_at_empty_row**（可选，默认 `false`）：在第一个完全空白的行处停止读取
@@ -559,7 +563,7 @@ make test_release
 
 ```bash
 make clean_all
-DUCKDB_TEST_VERSION=v1.4.1 make configure
+DUCKDB_TEST_VERSION=v1.4.2 make configure
 make debug
 make test_debug
 ```

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::database::column::Column;
 use crate::database::column::ColumnType;
 use crate::error::ResultMessage;
@@ -12,6 +13,7 @@ use crate::extension::FileNameColumnParam;
 use crate::extension::FileParam;
 use crate::extension::HeaderParam;
 use crate::extension::NamedParam;
+use crate::extension::NullsParam;
 use crate::extension::Param;
 use crate::extension::Range;
 use crate::extension::RangeParam;
@@ -48,6 +50,8 @@ struct ReadSheetParameters {
     columns: Option<Vec<(Pattern, ColumnType)>>,
     /// Number of rows to analyze for automatic type detection
     analyze_rows: Option<usize>,
+    /// null literals (default: empty string)
+    nulls: Option<HashSet<String>>,
     /// Convert parsing errors to NULL values instead of failing
     error_as_null: Option<bool>,
     /// Skip rows that contain no data
@@ -73,6 +77,7 @@ impl TryFrom<&BindInfo> for ReadSheetParameters {
             header: HeaderParam::read(bind)?,
             columns: ColumnsParam::read(bind)?,
             analyze_rows: AnalyzeRowsParam::read(bind)?,
+            nulls: NullsParam::read(bind)?,
             error_as_null: ErrorAsNullParam::read(bind)?,
             skip_empty_rows: SkipEmptyRowsParam::read(bind)?,
             end_at_empty_row: EndAtEmptyRowParam::read(bind)?,
@@ -113,6 +118,7 @@ impl TryFrom<&ReadSheetParameters> for ReadSheetBindData {
 
         // Set default values for optional parameters
         let header = parameters.header.unwrap_or(true);
+        let nulls = parameters.nulls.to_owned().unwrap_or(HashSet::from(["".to_string()]));
         let error_as_null = parameters.error_as_null.unwrap_or(false);
         let skip_empty_rows = parameters.skip_empty_rows.unwrap_or(false);
         let end_at_empty_row = parameters.end_at_empty_row.unwrap_or(false);
@@ -123,6 +129,7 @@ impl TryFrom<&ReadSheetParameters> for ReadSheetBindData {
             sheet_limit: Some(1),
             range: parameters.range,
             rows_limit: parameters.analyze_rows.or(Some(10)),
+            nulls: nulls.to_owned(),
             error_as_null,
             skip_empty_rows,
             end_at_empty_row,
@@ -160,6 +167,7 @@ impl TryFrom<&ReadSheetParameters> for ReadSheetBindData {
                 col_upper_bound: Some(table.col_upper_bound),
             }),
             rows_limit: None,
+            nulls: nulls.to_owned(),
             error_as_null,
             skip_empty_rows,
             end_at_empty_row,
@@ -281,6 +289,7 @@ impl VTab for ReadSheetTableFunction {
             HeaderParam::definition(),
             ColumnsParam::definition(),
             AnalyzeRowsParam::definition(),
+            NullsParam::definition(),
             ErrorAsNullParam::definition(),
             SkipEmptyRowsParam::definition(),
             EndAtEmptyRowParam::definition(),

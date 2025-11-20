@@ -1,6 +1,6 @@
 [package]
 name = "rusty_sheet"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 
 [lib]
@@ -23,15 +23,15 @@ crate-type = ["staticlib"]
 anyhow = "1.0.100"
 chrono = { version = "0.4.42", features = ["serde"] }
 codepage = "0.1.2"
-duckdb = { version = "1.4.1", features = ["vtab-loadable"] }
-duckdb-loadable-macros = "0.1.11"
+duckdb = { version = "1.4.2", features = ["vtab-loadable"] }
+duckdb-loadable-macros = "0.1.12"
 either = "1.15.0"
 encoding_rs = "0.8.35"
 glob = "0.3.3"
 iso8601-duration = "0.2.0"
-libduckdb-sys = { version = "1.4.1", features = ["loadable-extension"] }
-quick-xml = "0.38.3"
+libduckdb-sys = { version = "1.4.2", features = ["loadable-extension"] }
+quick-xml = "0.38.4"
 regex = "1.12.2"
 thiserror = "2.0.17"
-url = "2.5.3"
-zip = { version = "5.1.1", features = ["deflate"] }
+url = "2.5.7"
+zip = { version = "6.0.0", features = ["deflate"] }

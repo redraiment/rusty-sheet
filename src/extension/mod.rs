@@ -18,6 +18,7 @@ use duckdb::vtab::BindInfo;
 use duckdb::vtab::Value;
 use glob::glob;
 use glob::Pattern;
+use std::collections::HashSet;
 use thiserror::Error;
 
 /// Errors specific to extension parameter processing and validation.
@@ -38,7 +39,6 @@ pub(crate) enum ExtensionError {
 
 /// Trait for reading positional parameters from DuckDB bind info.
 pub(crate) trait Param<T> {
-
     /// Returns the DuckDB logical type for this parameter.
     fn kind() -> LogicalTypeHandle;
 
@@ -82,6 +82,7 @@ struct HeaderParam;
 struct UnionByNameParam;
 struct ColumnsParam;
 struct AnalyzeRowsParam;
+struct NullsParam;
 struct ErrorAsNullParam;
 struct SkipEmptyRowsParam;
 struct EndAtEmptyRowParam;
@@ -98,7 +99,6 @@ impl Param<String> for FileParam {
         let value = bind.get_parameter(index);
         Ok(value.to_string())
     }
-
 }
 
 /// Parameter handler for file patterns with glob expansion.
@@ -108,7 +108,8 @@ impl Param<Vec<String>> for FilesParam {
     }
 
     fn read(bind: &BindInfo, index: u64) -> Result<Vec<String>, RustySheetError> {
-        let wildcards = bind.get_parameter(index)
+        let wildcards = bind
+            .get_parameter(index)
             .to_list()
             .iter()
             .map(|parameter| parameter.to_string())
@@ -248,6 +249,25 @@ impl NamedParam<usize> for AnalyzeRowsParam {
 
     fn cast(value: Value) -> Result<usize, RustySheetError> {
         Ok(value.to_usize())
+    }
+}
+
+/// Parameter handler for null literals
+impl NamedParam<HashSet<String>> for NullsParam {
+    fn name() -> &'static str {
+        "nulls"
+    }
+
+    fn kind() -> LogicalTypeHandle {
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar))
+    }
+
+    fn cast(value: Value) -> Result<HashSet<String>, RustySheetError> {
+        Ok(value
+            .to_list()
+            .iter()
+            .map(|parameter| parameter.to_string())
+            .collect::<HashSet<_>>())
     }
 }
 
