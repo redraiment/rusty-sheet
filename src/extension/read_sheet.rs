@@ -100,7 +100,7 @@ pub(crate) struct ReadSheetBindData {
     /// Loaded sheet data organized in chunks for efficient processing
     sheets: Vec<Sheet>,
     /// Shared string table for efficient string storage (XLSX/XLSB format)
-    shared_strings: Vec<String>,
+    shared_strings: Vec<Option<String>>,
 }
 
 impl TryFrom<&ReadSheetParameters> for ReadSheetBindData {
@@ -173,6 +173,16 @@ impl TryFrom<&ReadSheetParameters> for ReadSheetBindData {
             end_at_empty_row,
         })?;
 
+        let shared_strings = shared_strings
+            .into_iter()
+            .map(|shared_string| {
+                if !nulls.contains(&shared_string) {
+                    Some(shared_string)
+                } else {
+                    None
+                }
+            })
+            .collect();
         Ok(ReadSheetBindData {
             columns,
             file_name_column,

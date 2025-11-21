@@ -121,12 +121,17 @@ pub(crate) trait Spreadsheet {
             let names = (col_lower_bound..=col_upper_bound).map(|col| {
                 let index = col - col_lower_bound;
                 if let Some(cell) = &header[index] {
-                    if cell.kind == CellType::SharedString {
+                    let value = if cell.kind == CellType::SharedString {
                         let id = cell.value.parse::<usize>().expect("Shared string index");
                         let index = mappings[&id];
                         shared_strings[index].to_owned()
                     } else {
                         cell.to_string()
+                    };
+                    if !criteria.nulls.contains(&value) {
+                        value
+                    } else {
+                        index_to_col(col).to_owned()
                     }
                 } else {
                     index_to_col(col).to_owned()

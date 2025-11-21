@@ -33,7 +33,8 @@ use duckdb::vtab::InitInfo;
 use duckdb::vtab::TableFunctionInfo;
 use duckdb::vtab::VTab;
 use glob::Pattern;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::error::Error;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -101,7 +102,7 @@ impl TryFrom<&BindInfo> for ReadSheetsParameters {
 /// Data structure for the bind phase of the read_sheets table function
 pub(crate) struct ReadSheetsBindData {
     /// Shared string tables for string reference resolution & loaded sheet data from each spreadsheet
-    spreadsheets: Vec<(Vec<String>, Vec<Sheet>, Vec<HashMap<usize, usize>>)>,
+    spreadsheets: Vec<(Vec<Option<String>>, Vec<Sheet>, Vec<HashMap<usize, usize>>)>,
     /// Column definitions with names and types
     columns: Vec<Column>,
     /// file name column index
@@ -214,7 +215,18 @@ impl TryFrom<&ReadSheetsParameters> for ReadSheetsBindData {
             }
 
             let shared_strings = spreadsheet.load_shared_strings(None)
-                .map(|(shared_strings, _)| shared_strings)
+                .map(|(shared_strings, _)| {
+                    shared_strings
+                        .into_iter()
+                        .map(|shared_string| {
+                            if !nulls.contains(&shared_string) {
+                                Some(shared_string)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
                 .with_prefix(spreadsheet.name().as_str())?;
             spreadsheets.push((shared_strings, sheets, sheets_columns_mappings));
         }

@@ -50,7 +50,7 @@ pub(crate) trait ValueBridge {
     /// # Safety
     /// This method is unsafe as it accesses raw pointers and makes assumptions
     /// about the internal memory layout of DuckDB values
-    unsafe fn get_value_ptr(&self) -> duckdb_value;
+    fn get_value_ptr(&self) -> duckdb_value;
 
     /// Converts the value to a boolean
     fn to_bool(&self) -> bool {
@@ -236,9 +236,9 @@ impl ValueBridge for Value {
     /// - Debug vs release builds
     ///
     /// **DO NOT USE DIRECTLY**
-    unsafe fn get_value_ptr(&self) -> duckdb_value {
+    fn get_value_ptr(&self) -> duckdb_value {
         // Cast the Value reference to a raw pointer, then reinterpret it as duckdb_value
         // This is a dangerous assumption about the internal memory layout
-        *(self as *const Value as *const duckdb_value)
+        unsafe { *(self as *const Value as *const duckdb_value) }
     }
 }

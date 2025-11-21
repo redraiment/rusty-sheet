@@ -15,7 +15,7 @@ use crate::spreadsheet::SpreadsheetError;
 
 /// Writes a cell value to a DuckDB vector based on column type.
 /// Handles type conversion and error mapping for different data types.
-pub(super) fn write_to_vector(sheet: &Sheet, column: &Column, cell: &Cell, vector: &mut FlatVector, row: usize, shared_strings: &Vec<String>) -> Result<(), RustySheetError> {
+pub(super) fn write_to_vector(sheet: &Sheet, column: &Column, cell: &Cell, vector: &mut FlatVector, row: usize, shared_strings: &Vec<Option<String>>) -> Result<(), RustySheetError> {
     let mapper = |message: String| {
         SpreadsheetError::CellValueError(
             sheet.file_name.to_owned(),
@@ -27,7 +27,11 @@ pub(super) fn write_to_vector(sheet: &Sheet, column: &Column, cell: &Cell, vecto
     match (column.kind, cell.kind) {
         (ColumnType::Varchar, CellType::SharedString) => {
             let index = cell.value.parse::<usize>()?;
-            vector.insert(row, &shared_strings[index]);
+            if let Some(shared_string) = &shared_strings[index] {
+                vector.insert(row, shared_string);
+            } else {
+                vector.set_null(row);
+            }
         }
         (ColumnType::Varchar, _) => vector.insert(row, &cell.to_string()),
         (ColumnType::Boolean, _) => write_primitive(vector, row, cell.to_boolean()),
