@@ -15,6 +15,7 @@ use crate::spreadsheet::excel;
 use crate::spreadsheet::excel::load_relationships;
 use crate::spreadsheet::reference::index_to_reference;
 use crate::spreadsheet::reference::reference_to_index;
+use crate::spreadsheet::resolve_number_format;
 use crate::spreadsheet::sheet::Sheet;
 use quick_xml::events::Event;
 use quick_xml::name::QName;
@@ -231,7 +232,14 @@ impl Spreadsheet for XlsxSpreadsheet {
                         if let Some(format_id) = event.get_attribute_value("s")? {
                             if kind == CellType::Number && !format_id.is_empty() {
                                 let index = format_id.parse::<usize>()?;
-                                kind = self.number_formats[index];
+                                kind = resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?;
                             }
                         }
                     } else {
@@ -518,4 +526,118 @@ fn read_string_value(
         Event::GeneralRef(event) if is_text => text.push_bytes_ref(&event)?,
     });
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spreadsheet::criteria::Criteria;
+    use std::collections::HashSet;
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    #[test]
+    fn invalid_style_index_returns_error() {
+        let path = invalid_style_workbook_path();
+        write_invalid_style_workbook(&path);
+
+        let mut spreadsheet = XlsxSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.read_sheets(&Criteria {
+            sheet_name_patterns: None,
+            sheet_limit: None,
+            range: None,
+            rows_limit: None,
+            nulls: HashSet::from(["".to_string()]),
+            error_as_null: false,
+            skip_empty_rows: false,
+            end_at_empty_row: false,
+            spread_merged_cells: false,
+        });
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected invalid style index error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Sheet1!A11"));
+        assert!(error.contains("invalid style index 999"));
+        assert!(error.contains("workbook defines 1 styles"));
+    }
+
+    fn invalid_style_workbook_path() -> PathBuf {
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("rusty-sheet-invalid-style-{id}.xlsx"))
+    }
+
+    fn write_invalid_style_workbook(path: &Path) {
+        let file = File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let rows = (2..11)
+            .map(|row| format!("<row r=\"{row}\"><c r=\"A{row}\"><v>{row}</v></c></row>"))
+            .collect::<String>();
+        let sheet = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>value</t></is></c></row>{rows}<row r="11"><c r="A11" s="999"><v>11</v></c></row></sheetData>
+</worksheet>"#
+        );
+
+        for (name, content) in [
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>"#.to_string(),
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#.to_string(),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/styles.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <cellXfs count="1"><xf numFmtId="0"/></cellXfs>
+</styleSheet>"#.to_string(),
+            ),
+            ("xl/worksheets/sheet1.xml", sheet),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
 }

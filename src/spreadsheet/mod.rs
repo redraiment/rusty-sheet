@@ -27,6 +27,25 @@ pub(crate) mod xlsx;
 pub(crate) mod criteria;
 pub(crate) mod sheet;
 
+pub(crate) fn resolve_number_format(
+    number_formats: &[CellType],
+    file_name: &str,
+    sheet_name: &str,
+    row: usize,
+    col: usize,
+    style_index: usize,
+) -> Result<CellType, SpreadsheetError> {
+    number_formats.get(style_index).copied().ok_or_else(|| {
+        SpreadsheetError::CellStyleIndexError(
+            file_name.to_owned(),
+            sheet_name.to_owned(),
+            crate::spreadsheet::reference::index_to_reference(row, col),
+            style_index,
+            number_formats.len(),
+        )
+    })
+}
+
 #[derive(Error, Debug)]
 pub(crate) enum SpreadsheetError {
     /// Error indicating the spreadsheet format is not supported
@@ -48,6 +67,10 @@ pub(crate) enum SpreadsheetError {
     /// Error indicating a specific cell value is invalid
     #[error("Cell '[{0}]{1}!{2}': {3}")]
     CellValueError(String, String, String, String),
+
+    /// Error indicating a cell style index is outside the workbook's style table.
+    #[error("Cell '[{0}]{1}!{2}': invalid style index {3}; workbook defines {4} styles")]
+    CellStyleIndexError(String, String, String, usize, usize),
 }
 
 pub(crate) trait Spreadsheet {
