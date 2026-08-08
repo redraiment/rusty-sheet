@@ -3,15 +3,16 @@
 use crate::database::column::Column;
 use crate::database::column::ColumnType;
 use crate::error::RustySheetError;
+use crate::spreadsheet::SpreadsheetError;
 use crate::spreadsheet::cell::Cell;
 use crate::spreadsheet::cell::CellType;
+use crate::spreadsheet::resolve_loaded_shared_string;
+use crate::spreadsheet::sheet::Sheet;
 use duckdb::core::FlatVector;
 use duckdb::core::Inserter;
 use libduckdb_sys::duckdb_date;
 use libduckdb_sys::duckdb_time;
 use libduckdb_sys::duckdb_timestamp;
-use crate::spreadsheet::sheet::Sheet;
-use crate::spreadsheet::SpreadsheetError;
 
 /// Writes a cell value to a DuckDB vector based on column type.
 /// Handles type conversion and error mapping for different data types.
@@ -25,8 +26,9 @@ pub(super) fn write_to_vector(sheet: &Sheet, column: &Column, cell: &Cell, vecto
         )
     };
     let cell = if cell.kind == CellType::SharedString {
-        let index = cell.value.parse::<usize>()?;
-        if let Some(shared_string) = &shared_strings[index] {
+        if let Some(shared_string) =
+            resolve_loaded_shared_string(shared_strings, &sheet.file_name, &sheet.name, cell)?
+        {
             &Cell {
                 row: cell.row,
                 col: cell.col,
