@@ -42,15 +42,14 @@ impl<R: BufRead> Biff12Reader<R> {
         &'_ self,
         at: usize,
     ) -> Result<(Cow<'_, str>, usize), RustySheetError> {
-        let lower_bound = at + 4usize;
-        let size = to_usize(&self.buffer[at..at + lower_bound]);
-        let upper_bound = lower_bound + size * 2;
-        if self.buffer.len() >= upper_bound {
-            let (value, _, _) = UTF_16LE.decode(&self.buffer[lower_bound..upper_bound]);
-            Ok((value, upper_bound))
-        } else {
-            Err(Biff12Error::NoEnoughData(upper_bound, self.buffer.len()))?
-        }
+        let size = self.get_usize(at)?;
+        let lower_bound = checked_offset(at, 4, self.buffer.len())?;
+        let byte_length = size
+            .checked_mul(2)
+            .ok_or(Biff12Error::NoEnoughData(usize::MAX, self.buffer.len()))?;
+        let upper_bound = checked_offset(lower_bound, byte_length, self.buffer.len())?;
+        let (value, _, _) = UTF_16LE.decode(self.slice(lower_bound, byte_length)?);
+        Ok((value, upper_bound))
     }
 
     /// Reads a UTF-16 string from the specified position
@@ -60,33 +59,39 @@ impl<R: BufRead> Biff12Reader<R> {
     }
 
     /// Reads a usize value from the specified position
-    pub(crate) fn get_usize(&'_ self, at: usize) -> usize {
-        to_usize(&self.buffer[at..at + 4])
+    pub(crate) fn get_usize(&'_ self, at: usize) -> Result<usize, RustySheetError> {
+        Ok(to_usize(self.slice(at, 4)?))
     }
 
     /// Reads a u16 value from the specified position
-    pub(crate) fn get_u16(&'_ self, at: usize) -> u16 {
-        to_u16(&self.buffer[at..at + 2])
+    pub(crate) fn get_u16(&'_ self, at: usize) -> Result<u16, RustySheetError> {
+        Ok(to_u16(self.slice(at, 2)?))
     }
 
     /// Reads a u32 value from the specified position
-    pub(crate) fn get_u32(&'_ self, at: usize) -> u32 {
-        to_u32(&self.buffer[at..at + 4])
+    pub(crate) fn get_u32(&'_ self, at: usize) -> Result<u32, RustySheetError> {
+        Ok(to_u32(self.slice(at, 4)?))
     }
 
     /// Reads an i32 value from the specified position
-    pub(crate) fn get_i32(&'_ self, at: usize) -> i32 {
-        to_i32(&self.buffer[at..at + 4])
+    pub(crate) fn get_i32(&'_ self, at: usize) -> Result<i32, RustySheetError> {
+        Ok(to_i32(self.slice(at, 4)?))
     }
 
     /// Reads an f64 value from the specified position
-    pub(crate) fn get_f64(&'_ self, at: usize) -> f64 {
-        to_f64(&self.buffer[at..at + 8])
+    pub(crate) fn get_f64(&'_ self, at: usize) -> Result<f64, RustySheetError> {
+        Ok(to_f64(self.slice(at, 8)?))
     }
 
     /// Reads a style index from the specified position (3 bytes, padded to 4)
-    pub(crate) fn get_style(&'_ self, at: usize) -> usize {
-        to_usize(&[self.buffer[at], self.buffer[at + 1], self.buffer[at + 2], 0])
+    pub(crate) fn get_style(&'_ self, at: usize) -> Result<usize, RustySheetError> {
+        let bytes = self.slice(at, 3)?;
+        Ok(to_usize(&[bytes[0], bytes[1], bytes[2], 0]))
+    }
+
+    /// Reads a byte from the specified position
+    pub(crate) fn get_u8(&'_ self, at: usize) -> Result<u8, RustySheetError> {
+        Ok(self.slice(at, 1)?[0])
     }
 
     /// Reads a 7-bit continuation integer with the specified byte limit
@@ -149,6 +154,46 @@ impl<R: BufRead> Biff12Reader<R> {
     /// Finds a record of the specified type without any skip ranges
     pub(crate) fn find(&mut self, target: u16) -> Result<usize, RustySheetError> {
         self.find_with(target, &[])
+    }
+
+    fn slice(&self, at: usize, length: usize) -> Result<&[u8], RustySheetError> {
+        let upper_bound = checked_offset(at, length, self.buffer.len())?;
+        Ok(&self.buffer[at..upper_bound])
+    }
+}
+
+fn checked_offset(at: usize, length: usize, actual: usize) -> Result<usize, Biff12Error> {
+    let upper_bound = at
+        .checked_add(length)
+        .ok_or(Biff12Error::NoEnoughData(usize::MAX, actual))?;
+    if upper_bound <= actual {
+        Ok(upper_bound)
+    } else {
+        Err(Biff12Error::NoEnoughData(upper_bound, actual))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn fixed_width_reads_return_errors_for_short_records() {
+        let mut reader = Biff12Reader::new(Cursor::new(Vec::new()));
+        reader.buffer = vec![0; 8];
+
+        assert!(reader.get_f64(1).unwrap_err().to_string().contains("No enough data"));
+        assert!(reader.get_style(6).unwrap_err().to_string().contains("No enough data"));
+    }
+
+    #[test]
+    fn string_reads_return_errors_for_short_records() {
+        let mut reader = Biff12Reader::new(Cursor::new(Vec::new()));
+        reader.buffer = vec![2, 0, 0, 0, b'a'];
+
+        assert!(reader.get_str(0).unwrap_err().to_string().contains("No enough data"));
+        assert!(reader.get_str(3).unwrap_err().to_string().contains("No enough data"));
     }
 }
 
