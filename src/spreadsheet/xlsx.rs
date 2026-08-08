@@ -6,8 +6,10 @@ use crate::helpers::xml::XmlReader;
 use crate::helpers::xml::XmlTextContextHelper;
 use crate::helpers::zip::ZipHelper;
 use crate::match_xml_events;
+use crate::spreadsheet::SheetBatch;
 use crate::spreadsheet::Spreadsheet;
 use crate::spreadsheet::SpreadsheetError;
+use crate::spreadsheet::stream_materialized_sheets;
 use crate::spreadsheet::cell::Cell;
 use crate::spreadsheet::cell::CellType;
 use crate::spreadsheet::criteria::Criteria;
@@ -15,13 +17,16 @@ use crate::spreadsheet::excel;
 use crate::spreadsheet::excel::load_relationships;
 use crate::spreadsheet::reference::index_to_reference;
 use crate::spreadsheet::reference::reference_to_index;
+use crate::spreadsheet::resolve_number_format;
 use crate::spreadsheet::sheet::Sheet;
+use crate::spreadsheet::shared_strings::SharedStringStore;
 use quick_xml::events::Event;
 use quick_xml::name::QName;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::BufReader;
+use std::sync::Arc;
 use zip::ZipArchive;
 use zip::read::ZipFile;
 
@@ -70,6 +75,181 @@ impl XlsxSpreadsheet {
             number_formats,
             sheets,
         })
+    }
+
+    fn load_shared_string_store(&mut self) -> Result<SharedStringStore, RustySheetError> {
+        let mut store = SharedStringStore::new()?;
+        let Some(mut reader) = self.zip.xml_reader("xl/sharedStrings.xml")? else {
+            return Ok(store);
+        };
+        match_xml_events!(reader => {
+            Event::Start(event) if event.name() == TAG_SHARED_STRING_ITEM => {
+                let value = read_string_value(&mut reader, TAG_SHARED_STRING_ITEM, false)?;
+                store.push(&value)?;
+            }
+        });
+        Ok(store)
+    }
+
+    fn stream_xlsx_sheets(
+        &mut self,
+        criteria: &Criteria,
+        consumer: &mut dyn FnMut(SheetBatch) -> bool,
+    ) -> Result<(), RustySheetError> {
+        let mut shared_strings = self.load_shared_string_store()?;
+        let empty_shared_strings = Arc::new(Vec::new());
+        let mut sheet_count = 0_usize;
+
+        for (sheet_name, zip_path) in &self.sheets {
+            if criteria
+                .sheet_limit
+                .map(|limit| sheet_count >= limit)
+                .unwrap_or(false)
+            {
+                break;
+            } else if criteria.accept(sheet_name) {
+                sheet_count += 1;
+            } else {
+                continue;
+            }
+
+            let mut sheet = Sheet::new(
+                &self.name,
+                sheet_name,
+                criteria.range,
+                criteria.rows_limit,
+                criteria.skip_empty_rows,
+            );
+            let mut last_row = sheet.chunk_row_lower;
+            let mut has_data = false;
+            let mut row_count = 0_usize;
+            let mut col_count = 0_usize;
+            let mut row = 0_usize;
+            let mut col = 0_usize;
+            let mut kind = CellType::default();
+            let mut value = String::new();
+            let mut reader = required_xml_reader(&mut self.zip, zip_path)?;
+
+            match_xml_events!(reader => {
+                Event::End(event) if event.name() == TAG_ROW => {
+                    row_count += 1;
+                    col_count = 0;
+                }
+                Event::Start(event) if event.name() == TAG_CELL => {
+                    if let Some(reference) = event.get_attribute_value("r")? {
+                        (row, col) = reference_to_index(&reference).ok_or_else(|| {
+                            SpreadsheetError::CellReferenceError(
+                                sheet.file_name.to_owned(),
+                                sheet.name.to_owned(),
+                                reference.to_string(),
+                            )
+                        })?;
+                    } else {
+                        (row, col) = (row_count, col_count);
+                    }
+                    col_count += 1;
+                    if sheet.after_row_upper_bound(row) {
+                        break;
+                    }
+                    if sheet.contains(row, col) {
+                        kind = event.get_attribute_value("t")?.map(|value| {
+                            match value.as_ref() {
+                                "inlineStr" | "str" => CellType::InlineString,
+                                "s" => CellType::SharedString,
+                                "d" => CellType::IsoDateTime,
+                                "b" => CellType::Boolean,
+                                "e" => if criteria.error_as_null { CellType::Empty } else { CellType::Error },
+                                _ => CellType::Number,
+                            }
+                        }).unwrap_or(CellType::Number);
+                        if let Some(format_id) = event.get_attribute_value("s")? {
+                            if kind == CellType::Number && !format_id.is_empty() {
+                                let index = format_id.parse::<usize>()?;
+                                kind = resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?;
+                            }
+                        }
+                    } else {
+                        kind = CellType::default();
+                    }
+                }
+                Event::Start(event) if kind != CellType::Empty && event.name() == TAG_INLINE_STRING => {
+                    value = read_string_value(&mut reader, TAG_INLINE_STRING, false)?;
+                }
+                Event::Start(event) if kind != CellType::Empty && event.name() == TAG_VALUE => {
+                    value = read_string_value(&mut reader, TAG_VALUE, true)?;
+                }
+                Event::End(event) if kind != CellType::Empty && event.name() == TAG_CELL => {
+                    if kind == CellType::Error {
+                        let reference = index_to_reference(row, col);
+                        Err(SpreadsheetError::CellValueError(
+                            sheet.file_name.clone(),
+                            sheet.name.clone(),
+                            reference,
+                            value.clone(),
+                        ))?
+                    }
+
+                    let (kind, resolved_value) = if kind == CellType::SharedString {
+                        let value = shared_strings.get(value.parse::<usize>()?)?;
+                        (CellType::InlineString, (!criteria.nulls.contains(&value)).then_some(value))
+                    } else if criteria.nulls.contains(&value) {
+                        (kind, None)
+                    } else {
+                        (kind, Some(value.clone()))
+                    };
+
+                    if let Some(resolved_value) = resolved_value {
+                        if let Some(last_row) = last_row {
+                            if criteria.end_at_empty_row
+                                && ((!has_data && last_row != row)
+                                    || (has_data && last_row + 1 < row))
+                            {
+                                break;
+                            }
+                        }
+                        last_row = Some(row);
+                        has_data = true;
+                        sheet.push(Cell {
+                            row,
+                            col,
+                            kind,
+                            value: resolved_value,
+                        });
+                        while let Some(chunk) = sheet.take_ready_chunk() {
+                            if !consumer(SheetBatch {
+                                sheet: chunk,
+                                shared_strings: Arc::clone(&empty_shared_strings),
+                            }) {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    value.clear();
+                }
+                Event::End(event) if event.name() == TAG_CELL => {
+                    value.clear();
+                },
+            });
+
+            sheet.finish(criteria.end_at_empty_row);
+            while let Some(chunk) = sheet.take_ready_chunk() {
+                if !consumer(SheetBatch {
+                    sheet: chunk,
+                    shared_strings: Arc::clone(&empty_shared_strings),
+                }) {
+                    return Ok(());
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -171,7 +351,7 @@ impl Spreadsheet for XlsxSpreadsheet {
             };
 
             // Single pass: Read cells and collect merged cell ranges
-            let mut reader = self.zip.xml_reader(zip_path)?.expect(sheet_name);
+            let mut reader = required_xml_reader(&mut self.zip, zip_path)?;
             let mut in_merge_cells = false;
             
             match_xml_events!(reader => {
@@ -207,9 +387,17 @@ impl Spreadsheet for XlsxSpreadsheet {
                     col_count = 0;
                 }
                 Event::Start(event) if event.name() == TAG_CELL => {
-                    (row, col) = event.get_attribute_value("r")?
-                        .and_then(|reference| reference_to_index(&reference))
-                        .unwrap_or((row_count, col_count));
+                    if let Some(reference) = event.get_attribute_value("r")? {
+                        (row, col) = reference_to_index(&reference).ok_or_else(|| {
+                            SpreadsheetError::CellReferenceError(
+                                sheet.file_name.to_owned(),
+                                sheet.name.to_owned(),
+                                reference.to_string(),
+                            )
+                        })?;
+                    } else {
+                        (row, col) = (row_count, col_count);
+                    }
                     col_count += 1;
                     if sheet.after_row_upper_bound(row) {
                         break;
@@ -231,7 +419,14 @@ impl Spreadsheet for XlsxSpreadsheet {
                         if let Some(format_id) = event.get_attribute_value("s")? {
                             if kind == CellType::Number && !format_id.is_empty() {
                                 let index = format_id.parse::<usize>()?;
-                                kind = self.number_formats[index];
+                                kind = resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?;
                             }
                         }
                     } else {
@@ -353,6 +548,25 @@ impl Spreadsheet for XlsxSpreadsheet {
 
         Ok(sheets)
     }
+
+    fn stream_sheets(
+        &mut self,
+        criteria: &Criteria,
+        consumer: &mut dyn FnMut(SheetBatch) -> bool,
+    ) -> Result<(), RustySheetError> {
+        if criteria.spread_merged_cells {
+            let shared_strings = Arc::new(
+                self.load_shared_strings(None)?
+                    .0
+                    .into_iter()
+                    .map(|value| (!criteria.nulls.contains(&value)).then_some(value))
+                    .collect(),
+            );
+            stream_materialized_sheets(self.read_sheets(criteria)?, shared_strings, consumer);
+            return Ok(());
+        }
+        self.stream_xlsx_sheets(criteria, consumer)
+    }
 }
 
 /// Loads workbook structure and worksheet information from XLSX file
@@ -367,8 +581,7 @@ impl Spreadsheet for XlsxSpreadsheet {
 /// Tuple of (worksheets, is_1904_date_system) where worksheets are (name, zip_path) pairs
 fn load_workbook(zip: &mut ZipArchive<UnifiedReader>) -> Result<(Vec<(String, String)>, bool), RustySheetError> {
     let relationships = load_relationships(zip, "xl/_rels/workbook.xml.rels")?;
-    let mut reader = zip.xml_reader("xl/workbook.xml")?
-        .ok_or_else(|| SpreadsheetError::FileError("xl/workbook.xml".to_string()))?;
+    let mut reader = required_xml_reader(zip, "xl/workbook.xml")?;
     let mut sheets: Vec<(String, String)> = Vec::new();
     let mut is_1904 = false;
     match_xml_events!(reader => {
@@ -487,6 +700,15 @@ fn parse_merge_range(range_ref: &str) -> Option<(usize, usize, usize, usize)> {
     Some((top_row, top_col, bottom_row, bottom_col))
 }
 
+fn required_xml_reader<'a>(
+    zip: &'a mut ZipArchive<UnifiedReader>,
+    path: &str,
+) -> Result<XmlReader<BufReader<ZipFile<'a, UnifiedReader>>>, RustySheetError> {
+    zip.xml_reader(path)?.ok_or_else(|| {
+        RustySheetError::from(SpreadsheetError::FileError(path.to_string()))
+    })
+}
+
 /// Reads string value from XML content, handling text and CDATA sections
 ///
 /// Extracts string content from XML elements, skipping phonetic text annotations
@@ -518,4 +740,462 @@ fn read_string_value(
         Event::GeneralRef(event) if is_text => text.push_bytes_ref(&event)?,
     });
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spreadsheet::criteria::Criteria;
+    use std::collections::HashSet;
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    #[test]
+    fn invalid_style_index_returns_error() {
+        let path = invalid_workbook_path("style");
+        write_invalid_style_workbook(&path);
+
+        let mut spreadsheet = XlsxSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.read_sheets(&default_criteria());
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected invalid style index error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Sheet1!A11"));
+        assert!(error.contains("invalid style index 999"));
+        assert!(error.contains("workbook defines 1 styles"));
+    }
+
+    #[test]
+    fn stream_invalid_style_index_returns_error() {
+        let path = invalid_workbook_path("stream-style");
+        write_invalid_style_workbook(&path);
+
+        let mut spreadsheet = XlsxSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.stream_sheets(&default_criteria(), &mut |_| true);
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected invalid style index error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Sheet1!A11"));
+        assert!(error.contains("invalid style index 999"));
+        assert!(error.contains("workbook defines 1 styles"));
+    }
+
+    #[test]
+    fn invalid_shared_string_index_returns_error() {
+        let path = invalid_workbook_path("shared-string");
+        write_invalid_shared_string_workbook(&path);
+
+        let mut spreadsheet = XlsxSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.analyze_sheets(true, &default_criteria(), &Vec::new());
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected invalid shared string index error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Sheet1!A1"));
+        assert!(error.contains("invalid shared string index 999"));
+    }
+
+    #[test]
+    fn invalid_cell_reference_returns_error() {
+        let path = invalid_workbook_path("cell-reference");
+        write_invalid_cell_reference_workbook(&path);
+
+        let mut spreadsheet = XlsxSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.read_sheets(&default_criteria());
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected invalid cell reference error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Sheet1"));
+        assert!(error.contains("invalid cell reference 'XFE1'"));
+    }
+
+    #[test]
+    fn stream_invalid_cell_reference_returns_error() {
+        let path = invalid_workbook_path("stream-cell-reference");
+        write_invalid_cell_reference_workbook(&path);
+
+        let mut spreadsheet = XlsxSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.stream_sheets(&default_criteria(), &mut |_| true);
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected invalid cell reference error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Sheet1"));
+        assert!(error.contains("invalid cell reference 'XFE1'"));
+    }
+
+    #[test]
+    fn invalid_date_header_value_returns_error() {
+        let path = invalid_workbook_path("date-header");
+        write_invalid_date_header_workbook(&path);
+
+        let mut spreadsheet = XlsxSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.analyze_sheets(true, &default_criteria(), &Vec::new());
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected invalid date header value error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Sheet1!A1"));
+        assert!(error.contains("parse 'not-a-number' to Date(1900) failed"));
+    }
+
+    #[test]
+    fn missing_sheet_xml_returns_error() {
+        let path = invalid_workbook_path("missing-sheet");
+        write_missing_sheet_workbook(&path);
+
+        let mut spreadsheet = XlsxSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.read_sheets(&default_criteria());
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected missing sheet XML error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("xl/worksheets/sheet1.xml"));
+        assert!(error.contains("missing or corrupted"));
+    }
+
+    #[test]
+    fn missing_sheet_xml_returns_error_while_streaming() {
+        let path = invalid_workbook_path("missing-sheet-streaming");
+        write_missing_sheet_workbook(&path);
+
+        let mut spreadsheet = XlsxSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.stream_sheets(&default_criteria(), &mut |_| true);
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected missing sheet XML error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("xl/worksheets/sheet1.xml"));
+        assert!(error.contains("missing or corrupted"));
+    }
+
+    fn invalid_workbook_path(kind: &str) -> PathBuf {
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("rusty-sheet-invalid-{kind}-{id}.xlsx"))
+    }
+
+    fn default_criteria() -> Criteria {
+        Criteria {
+            sheet_name_patterns: None,
+            sheet_limit: None,
+            range: None,
+            rows_limit: None,
+            nulls: HashSet::from(["".to_string()]),
+            error_as_null: false,
+            skip_empty_rows: false,
+            end_at_empty_row: false,
+            spread_merged_cells: false,
+        }
+    }
+
+    fn write_invalid_style_workbook(path: &Path) {
+        let file = File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let rows = (2..11)
+            .map(|row| format!("<row r=\"{row}\"><c r=\"A{row}\"><v>{row}</v></c></row>"))
+            .collect::<String>();
+        let sheet = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>value</t></is></c></row>{rows}<row r="11"><c r="A11" s="999"><v>11</v></c></row></sheetData>
+</worksheet>"#
+        );
+
+        for (name, content) in [
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>"#.to_string(),
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#.to_string(),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/styles.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <cellXfs count="1"><xf numFmtId="0"/></cellXfs>
+</styleSheet>"#.to_string(),
+            ),
+            ("xl/worksheets/sheet1.xml", sheet),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn write_invalid_shared_string_workbook(path: &Path) {
+        let file = File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        for (name, content) in [
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>"#.to_string(),
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#.to_string(),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/sharedStrings.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1">
+  <si><t>name</t></si>
+</sst>"#.to_string(),
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row r="1"><c r="A1" t="s"><v>999</v></c></row></sheetData>
+</worksheet>"#.to_string(),
+            ),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn write_invalid_cell_reference_workbook(path: &Path) {
+        let file = File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        for (name, content) in [
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#.to_string(),
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#.to_string(),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row r="1"><c r="XFE1" t="inlineStr"><is><t>value</t></is></c></row></sheetData>
+</worksheet>"#.to_string(),
+            ),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn write_invalid_date_header_workbook(path: &Path) {
+        let file = File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        for (name, content) in [
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>"#.to_string(),
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#.to_string(),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/styles.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <cellXfs count="1"><xf numFmtId="14"/></cellXfs>
+</styleSheet>"#.to_string(),
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row r="1"><c r="A1" s="0"><v>not-a-number</v></c></row></sheetData>
+</worksheet>"#.to_string(),
+            ),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn write_missing_sheet_workbook(path: &Path) {
+        let file = File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        for (name, content) in [
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#.to_string(),
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#.to_string(),
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#.to_string(),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#.to_string(),
+            ),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
 }

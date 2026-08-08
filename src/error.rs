@@ -47,9 +47,6 @@ pub(crate) enum RustySheetError {
 
     // Helper module errors
     #[error("{0}")]
-    CfbHelperError(#[from] crate::helpers::cfb::CfbError),
-
-    #[error("{0}")]
     XmlHelperError(#[from] crate::helpers::xml::XmlError),
 
     #[error("{0}")]
@@ -81,24 +78,6 @@ pub(crate) enum RustySheetError {
     // Extension module errors
     #[error("{0}")]
     ExtensionError(#[from] crate::extension::ExtensionError),
-}
-
-pub(crate) trait ResultOptionChain {
-    fn ok_none_else<F>(self, f: F) -> Self
-    where
-        F: FnOnce() -> Self;
-}
-
-impl<T, E> ResultOptionChain for Result<Option<T>, E> {
-    fn ok_none_else<F>(self, f: F) -> Self
-    where
-        F: FnOnce() -> Self,
-    {
-        match self {
-            Ok(None) => f(),
-            _ => self,
-        }
-    }
 }
 
 pub(crate) trait ResultMessage {

@@ -1,4 +1,3 @@
-use crate::error::ResultOptionChain;
 use crate::error::RustySheetError;
 use crate::helpers::biff8::Biff8Reader;
 use crate::helpers::cfb::Cfb;
@@ -10,12 +9,18 @@ use crate::spreadsheet::cell::CellType;
 use crate::spreadsheet::criteria::Criteria;
 use crate::spreadsheet::excel::load_number_formats;
 use crate::spreadsheet::reference::index_to_reference;
+use crate::spreadsheet::resolve_number_format;
 use crate::spreadsheet::sheet::Sheet;
+use crate::spreadsheet::shared_strings::SharedStringStore;
+use crate::spreadsheet::SheetBatch;
 use crate::spreadsheet::Spreadsheet;
 use crate::spreadsheet::SpreadsheetError;
 use either::Either;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::sync::Arc;
 use thiserror::Error;
 
 // BIFF8 record type identifiers for Excel file parsing
@@ -55,8 +60,8 @@ pub(crate) struct XlsSpreadsheet {
     pub(crate) name: String,
     /// BIFF8 reader for parsing Excel binary format records
     reader: Biff8Reader,
-    /// Shared string table containing repeated text values
-    shared_strings: Vec<String>,
+    /// Disk-backed shared string table containing repeated text values
+    shared_strings: SharedStringStore,
     /// Number format mappings for cell type detection
     number_formats: Vec<CellType>,
     /// List of worksheets with their names and stream positions
@@ -73,14 +78,18 @@ impl XlsSpreadsheet {
     /// * `Result<XlsSpreadsheet, RustySheetError>` - Initialized spreadsheet or error
     pub(crate) fn open(file_name: &str) -> Result<XlsSpreadsheet, RustySheetError> {
         // Open file from local path or remote URL
-        let mut reader = UnifiedReader::new(file_name)?;
-        let cfb = Cfb::new(&mut reader)?;
-        let mut reader = cfb.read("Workbook")
-            .ok_none_else(|| cfb.read("Book"))?
-            .map(Biff8Reader::new)
-            .ok_or_else(|| SpreadsheetError::SpreadsheetEmptyError(file_name.to_owned()))?;
+        let reader = UnifiedReader::new(file_name)?;
+        let mut cfb = Cfb::new(reader)?;
+        let mut workbook = tempfile::tempfile()?;
+        if !cfb.copy_to("Workbook", &mut workbook)? && !cfb.copy_to("Book", &mut workbook)? {
+            Err(SpreadsheetError::SpreadsheetEmptyError(file_name.to_owned()))?;
+        }
+        let length = usize::try_from(workbook.stream_position()?)
+            .map_err(|_| std::io::Error::other("XLS workbook is too large"))?;
+        workbook.seek(SeekFrom::Start(0))?;
+        let mut reader = Biff8Reader::new(workbook, length)?;
         let mut is_1904 = false;
-        let mut shared_strings = Vec::new();
+        let mut shared_strings = SharedStringStore::new()?;
         let mut custom_formats: HashMap<String, CellType> = HashMap::new();
         let mut format_indexes: Vec<String> = Vec::new();
         let mut sheets: Vec<(String, usize)> = Vec::new();
@@ -105,7 +114,7 @@ impl XlsSpreadsheet {
                 let id = reader.read_u16()?;
                 format_indexes.push(id.to_string());
             }
-            SST => shared_strings = load_shared_strings(&mut reader)?,
+            SST => load_shared_strings(&mut reader, &mut shared_strings)?,
             BOUND_SHEET8 => {
                 let pointer = reader.read_usize()?;
                 reader.skip(2)?;
@@ -127,6 +136,174 @@ impl XlsSpreadsheet {
             sheets,
         })
     }
+
+    fn stream_xls_sheets(
+        &mut self,
+        criteria: &Criteria,
+        consumer: &mut dyn FnMut(SheetBatch) -> bool,
+    ) -> Result<(), RustySheetError> {
+        let empty_shared_strings = Arc::new(Vec::new());
+        let mut sheet_count = 0_usize;
+        for (sheet_name, pointer) in &self.sheets {
+            if criteria
+                .sheet_limit
+                .map(|limit| sheet_count >= limit)
+                .unwrap_or(false)
+            {
+                break;
+            } else if criteria.accept(sheet_name) {
+                sheet_count += 1;
+            } else {
+                continue;
+            }
+
+            self.reader.goto(*pointer);
+            self.reader.next()?;
+            let mut sheet = Sheet::new(
+                &self.name,
+                sheet_name,
+                criteria.range,
+                criteria.rows_limit,
+                criteria.skip_empty_rows,
+            );
+            let mut last_row = sheet.chunk_row_lower;
+            let mut has_data = false;
+            while let Some(tag) = self.reader.next()? {
+                match tag {
+                    BOF | EOF => break,
+                    MUL_RK => {
+                        let row = self.reader.read_u16()? as usize;
+                        let col_lower_bound = self.reader.read_u16()? as usize;
+                        let col_upper_bound = self.reader.get_u16_back(2)? as usize;
+                        for col in col_lower_bound..=col_upper_bound {
+                            if sheet.contains(row, col) {
+                                if let Some(last_row) = last_row {
+                                    if criteria.end_at_empty_row
+                                        && ((!has_data && last_row != row)
+                                            || (has_data && last_row + 1 < row))
+                                    {
+                                        break;
+                                    }
+                                }
+                                last_row = Some(row);
+                                let index = self.reader.read_u16()? as usize;
+                                let kind = resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?;
+                                let value = self.reader.read_rk_number()?;
+                                if !criteria.nulls.contains(&value) {
+                                    has_data = true;
+                                    sheet.push(Cell {
+                                        row,
+                                        col,
+                                        kind,
+                                        value,
+                                    });
+                                    while let Some(chunk) = sheet.take_ready_chunk() {
+                                        if !consumer(SheetBatch {
+                                            sheet: chunk,
+                                            shared_strings: Arc::clone(&empty_shared_strings),
+                                        }) {
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                            } else {
+                                self.reader.skip(6)?;
+                            }
+                        }
+                    }
+                    BOOL_ERR | NUMBER | RK | LABEL_SST | LABEL | FORMULA => {
+                        let row = self.reader.read_u16()? as usize;
+                        let col = self.reader.read_u16()? as usize;
+                        if sheet.contains(row, col) {
+                            if let Some(last_row) = last_row {
+                                if criteria.end_at_empty_row
+                                    && ((!has_data && last_row != row)
+                                        || (has_data && last_row + 1 < row))
+                                {
+                                    break;
+                                }
+                            }
+                            last_row = Some(row);
+                            let (either, value) = match tag {
+                                BOOL_ERR => read_bool_or_error_cell(&mut self.reader)?,
+                                NUMBER => read_number_cell(&mut self.reader)?,
+                                RK => read_rk_cell(&mut self.reader)?,
+                                LABEL_SST => read_label_sst_cell(&mut self.reader)?,
+                                LABEL => read_label_cell(&mut self.reader)?,
+                                _ => read_formula_cell(&mut self.reader)?,
+                            };
+                            let kind = match either {
+                                Either::Left(kind) => kind,
+                                Either::Right(index) => resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?,
+                            };
+                            if kind == CellType::Error {
+                                if !criteria.error_as_null {
+                                    let reference = index_to_reference(row, col);
+                                    Err(SpreadsheetError::CellValueError(
+                                        sheet.file_name.clone(),
+                                        sheet.name.clone(),
+                                        reference,
+                                        value,
+                                    ))?;
+                                }
+                                continue;
+                            }
+                            let (kind, value) = if kind == CellType::SharedString {
+                                (
+                                    CellType::InlineString,
+                                    self.shared_strings.get(value.parse::<usize>()?)?,
+                                )
+                            } else {
+                                (kind, value)
+                            };
+                            if !criteria.nulls.contains(&value) {
+                                has_data = true;
+                                sheet.push(Cell {
+                                    row,
+                                    col,
+                                    kind,
+                                    value,
+                                });
+                                while let Some(chunk) = sheet.take_ready_chunk() {
+                                    if !consumer(SheetBatch {
+                                        sheet: chunk,
+                                        shared_strings: Arc::clone(&empty_shared_strings),
+                                    }) {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            sheet.finish(criteria.end_at_empty_row);
+            while let Some(chunk) = sheet.take_ready_chunk() {
+                if !consumer(SheetBatch {
+                    sheet: chunk,
+                    shared_strings: Arc::clone(&empty_shared_strings),
+                }) {
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Spreadsheet for XlsSpreadsheet {
@@ -137,8 +314,7 @@ impl Spreadsheet for XlsSpreadsheet {
 
     /// Loads shared strings with optional index filtering
     ///
-    /// XLS files are typically small enough to load all shared strings at once
-    /// and maintain them in memory for efficient access during parsing.
+    /// Selected values are loaded from the disk-backed shared string table.
     ///
     /// # Arguments
     /// * `indexes` - Optional set of string indexes to filter by
@@ -149,12 +325,19 @@ impl Spreadsheet for XlsSpreadsheet {
         &mut self,
         indexes: Option<HashSet<usize>>,
     ) -> Result<(Vec<String>, HashMap<usize, usize>), RustySheetError> {
-        let shared_strings = self.shared_strings.to_owned();
-        let mut mappings = HashMap::<usize, usize>::new();
-        if let Some(keys) = indexes {
-            for key in keys {
-                mappings.insert(key, key);
+        let Some(indexes) = indexes else {
+            let mut shared_strings = Vec::with_capacity(self.shared_strings.len());
+            for id in 0..self.shared_strings.len() {
+                shared_strings.push(self.shared_strings.get(id)?);
             }
+            return Ok((shared_strings, HashMap::new()));
+        };
+        let mut shared_strings = Vec::with_capacity(indexes.len());
+        let mut mappings = HashMap::<usize, usize>::new();
+        for id in indexes {
+            let index = shared_strings.len();
+            shared_strings.push(self.shared_strings.get(id)?);
+            mappings.insert(id, index);
         }
         Ok((shared_strings, mappings))
     }
@@ -201,7 +384,14 @@ impl Spreadsheet for XlsSpreadsheet {
                                 }
                                 last_row = Some(row);
                                 let index = self.reader.read_u16()? as usize;
-                                let kind = self.number_formats[index];
+                                let kind = resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?;
                                 let value = self.reader.read_rk_number()?;
                                 sheet.push(Cell {
                                     row,
@@ -234,7 +424,14 @@ impl Spreadsheet for XlsSpreadsheet {
                             };
                             let kind = match either {
                                 Either::Left(kind) => kind,
-                                Either::Right(index) => self.number_formats[index],
+                                Either::Right(index) => resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?,
                             };
                             if kind != CellType::Error {
                                 if !criteria.nulls.contains(&value) {
@@ -265,6 +462,14 @@ impl Spreadsheet for XlsSpreadsheet {
 
         Ok(sheets)
     }
+
+    fn stream_sheets(
+        &mut self,
+        criteria: &Criteria,
+        consumer: &mut dyn FnMut(SheetBatch) -> bool,
+    ) -> Result<(), RustySheetError> {
+        self.stream_xls_sheets(criteria, consumer)
+    }
 }
 
 /// Loads the shared string table from BIFF8 SST record
@@ -276,16 +481,18 @@ impl Spreadsheet for XlsSpreadsheet {
 /// * `reader` - BIFF8 reader positioned at SST record
 ///
 /// # Returns
-/// * `Result<Vec<String>>` - Vector of shared string values
-fn load_shared_strings(reader: &mut Biff8Reader) -> Result<Vec<String>, RustySheetError> {
-    let mut shared_strings: Vec<String> = Vec::new();
+/// * `Result<()>` - Values are appended to the disk-backed store
+fn load_shared_strings(
+    reader: &mut Biff8Reader,
+    shared_strings: &mut SharedStringStore,
+) -> Result<(), RustySheetError> {
     reader.skip(4)?;
     let count = reader.read_usize()?;
     for _ in 0..count {
         let string = reader.read_xl_unicode_rich_extended_string()?;
-        shared_strings.push(string);
+        shared_strings.push(&string)?;
     }
-    Ok(shared_strings)
+    Ok(())
 }
 
 /// Reads a BOOL_ERR record containing boolean or error cell values
@@ -421,5 +628,32 @@ fn read_formula_cell(
         Ok((Either::Left(CellType::InlineString), "".to_owned()))
     } else {
         Err(XlsError::FormulaValueError(formula))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_all_shared_strings_preserves_index_order() {
+        let file = tempfile::tempfile().unwrap();
+        let reader = Biff8Reader::new(file, 0).unwrap();
+        let mut shared_strings = SharedStringStore::new().unwrap();
+        shared_strings.push("alpha").unwrap();
+        shared_strings.push("bravo").unwrap();
+        shared_strings.push("charlie").unwrap();
+        let mut spreadsheet = XlsSpreadsheet {
+            name: String::new(),
+            reader,
+            shared_strings,
+            number_formats: Vec::new(),
+            sheets: Vec::new(),
+        };
+
+        let (values, mappings) = spreadsheet.load_shared_strings(None).unwrap();
+
+        assert_eq!(values, ["alpha", "bravo", "charlie"]);
+        assert!(mappings.is_empty());
     }
 }

@@ -1,22 +1,6 @@
 //! Binary data conversion utilities for reading various numeric types from byte slices.
 //! Provides efficient little-endian conversion functions optimized for spreadsheet parsing.
 
-use std::usize;
-
-/// Converts a byte slice into an iterator of 32-bit unsigned integers.
-/// Processes bytes in 4-byte chunks using little-endian byte order.
-pub(crate) fn to_u32_iter(bytes: &[u8]) -> impl ExactSizeIterator<Item = u32> + '_ {
-    bytes.chunks(4)
-        .map(|chunk| chunk.try_into().expect("[u8; 4]"))
-        .map(u32::from_le_bytes)
-}
-
-/// Converts a byte slice into an iterator of usize values.
-/// First converts to u32, then safely converts to usize for the current platform.
-pub(crate) fn to_usize_iter(bytes: &[u8]) -> impl ExactSizeIterator<Item = usize> + '_ {
-    to_u32_iter(bytes).map(|value| value.try_into().expect("usize"))
-}
-
 /// Converts the first 8 bytes of a slice to a 64-bit floating point number.
 /// Uses little-endian byte order for conversion.
 #[inline]

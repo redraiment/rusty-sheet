@@ -22,6 +22,7 @@ crate-type = ["staticlib"]
 [dependencies]
 anyhow = "1.0.100"
 chrono = { version = "0.4.42", features = ["serde"] }
+cfb = "0.14.0"
 codepage = "0.1.2"
 duckdb = { version = "1.4.3", features = ["vtab-loadable"] }
 either = "1.15.0"
@@ -32,5 +33,6 @@ libduckdb-sys = { version = "1.4.3", features = ["loadable-extension"] }
 quick-xml = "0.38.4"
 regex = "1.12.2"
 thiserror = "2.0.17"
+tempfile = "3.23.0"
 url = "2.5.7"
 zip = { version = "6.0.0", features = ["deflate"] }

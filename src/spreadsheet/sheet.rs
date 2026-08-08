@@ -196,6 +196,38 @@ impl Sheet {
         }
     }
 
+    /// Removes the next completed chunk while retaining cells that belong to
+    /// the chunk currently being assembled.
+    pub(super) fn take_ready_chunk(&mut self) -> Option<Self> {
+        let (row_lower, row_upper, index_lower, index_upper) = self.chunks.first().copied()?;
+        debug_assert_eq!(index_lower, 0);
+
+        self.chunks.remove(0);
+        let remaining_cells = self.cells.split_off(index_upper);
+        let cells = std::mem::replace(&mut self.cells, remaining_cells);
+        self.chunk_index_lower -= index_upper;
+        for (_, _, lower, upper) in &mut self.chunks {
+            *lower -= index_upper;
+            *upper -= index_upper;
+        }
+
+        Some(Self {
+            file_name: self.file_name.clone(),
+            name: self.name.clone(),
+            chunks: vec![(row_lower, row_upper, 0, cells.len())],
+            chunk_index_lower: cells.len(),
+            chunk_row_lower: Some(row_lower),
+            range: self.range,
+            limit: None,
+            skip_empty_rows: self.skip_empty_rows,
+            row_lower_bound: Some(row_lower),
+            row_upper_bound: Some(row_upper),
+            col_lower_bound: self.col_lower_bound,
+            col_upper_bound: self.col_upper_bound,
+            cells,
+        })
+    }
+
     /// Retrieves a chunk of data as a 2D table of optional cell references.
     /// Returns None if the chunk index is out of bounds.
     pub(crate) fn chunk(&self, index: usize) -> Option<Vec<Vec<Option<&Cell>>>> {
@@ -393,5 +425,27 @@ mod tests {
         assert_eq!(*row_upper, 3);
         assert_eq!(*index_lower, 0);
         assert_eq!(*index_upper, 5);
+    }
+
+    #[test]
+    fn sheet_take_ready_chunk_releases_completed_cells() {
+        let mut sheet = Sheet::new("file.xlsx", "Sheet1", None, None, false);
+        push(&mut sheet, 0, 0);
+        push(&mut sheet, Sheet::CHUNK_SIZE, 0);
+
+        let chunk = sheet.take_ready_chunk().expect("first chunk");
+        assert_eq!(chunk.cells.len(), 1);
+        assert_eq!(chunk.chunks, vec![(0, Sheet::CHUNK_SIZE - 1, 0, 1)]);
+        assert_eq!(sheet.cells.len(), 1);
+        assert!(sheet.chunks.is_empty());
+
+        sheet.finish(false);
+        let chunk = sheet.take_ready_chunk().expect("final chunk");
+        assert_eq!(chunk.cells.len(), 1);
+        assert_eq!(
+            chunk.chunks,
+            vec![(Sheet::CHUNK_SIZE, Sheet::CHUNK_SIZE, 0, 1)]
+        );
+        assert!(sheet.cells.is_empty());
     }
 }
