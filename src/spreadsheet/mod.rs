@@ -27,6 +27,100 @@ pub(crate) mod xlsx;
 pub(crate) mod criteria;
 pub(crate) mod sheet;
 
+pub(crate) fn resolve_number_format(
+    number_formats: &[CellType],
+    file_name: &str,
+    sheet_name: &str,
+    row: usize,
+    col: usize,
+    style_index: usize,
+) -> Result<CellType, SpreadsheetError> {
+    number_formats.get(style_index).copied().ok_or_else(|| {
+        SpreadsheetError::CellStyleIndexError(
+            file_name.to_owned(),
+            sheet_name.to_owned(),
+            crate::spreadsheet::reference::index_to_reference(row, col),
+            style_index,
+            number_formats.len(),
+        )
+    })
+}
+
+#[cfg(test)]
+mod number_format_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_style_with_out_of_range_column_returns_error() {
+        let error = resolve_number_format(
+            &[CellType::Number],
+            "workbook.xlsb",
+            "Sheet1",
+            10,
+            16_384,
+            999,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Cell '[workbook.xlsb]Sheet1!R11C16385': invalid style index 999; workbook defines 1 styles"
+        );
+    }
+}
+
+pub(crate) fn resolve_shared_string<'a>(
+    shared_strings: &'a [String],
+    mappings: &HashMap<usize, usize>,
+    file_name: &str,
+    sheet_name: &str,
+    cell: &Cell,
+) -> Result<&'a str, RustySheetError> {
+    let shared_string_index = cell.value.parse::<usize>()?;
+    let mapped_index = mappings.get(&shared_string_index).copied().ok_or_else(|| {
+        SpreadsheetError::CellSharedStringIndexError(
+            file_name.to_owned(),
+            sheet_name.to_owned(),
+            cell.reference(),
+            shared_string_index,
+        )
+    })?;
+
+    shared_strings
+        .get(mapped_index)
+        .map(String::as_str)
+        .ok_or_else(|| {
+            SpreadsheetError::CellSharedStringIndexError(
+                file_name.to_owned(),
+                sheet_name.to_owned(),
+                cell.reference(),
+                shared_string_index,
+            )
+            .into()
+        })
+}
+
+pub(crate) fn resolve_loaded_shared_string<'a>(
+    shared_strings: &'a [Option<String>],
+    file_name: &str,
+    sheet_name: &str,
+    cell: &Cell,
+) -> Result<Option<&'a str>, RustySheetError> {
+    let shared_string_index = cell.value.parse::<usize>()?;
+    shared_strings
+        .get(shared_string_index)
+        .map(Option::as_deref)
+        .ok_or_else(|| {
+            SpreadsheetError::CellSharedStringIndexError(
+                file_name.to_owned(),
+                sheet_name.to_owned(),
+                cell.reference(),
+                shared_string_index,
+            )
+            .into()
+        })
+}
+
 #[derive(Error, Debug)]
 pub(crate) enum SpreadsheetError {
     /// Error indicating the spreadsheet format is not supported
@@ -48,6 +142,18 @@ pub(crate) enum SpreadsheetError {
     /// Error indicating a specific cell value is invalid
     #[error("Cell '[{0}]{1}!{2}': {3}")]
     CellValueError(String, String, String, String),
+
+    /// Error indicating a cell style index is outside the workbook's style table.
+    #[error("Cell '[{0}]{1}!{2}': invalid style index {3}; workbook defines {4} styles")]
+    CellStyleIndexError(String, String, String, usize, usize),
+
+    /// Error indicating a shared string index is outside the workbook's shared string table.
+    #[error("Cell '[{0}]{1}!{2}': invalid shared string index {3}")]
+    CellSharedStringIndexError(String, String, String, usize),
+
+    /// Error indicating a worksheet cell reference is outside the supported spreadsheet bounds.
+    #[error("Sheet '[{0}]{1}': invalid cell reference '{2}'")]
+    CellReferenceError(String, String, String),
 }
 
 pub(crate) trait Spreadsheet {
@@ -109,56 +215,78 @@ pub(crate) trait Spreadsheet {
         let (shared_strings, mappings) = self.load_shared_strings(Some(shared_indexes))?;
 
         let mut tables = Vec::<Table>::new();
-        for (name, header, data, row_lower_bound, col_lower_bound, col_upper_bound) in sheets.into_iter() {
-            let names = (col_lower_bound..=col_upper_bound).map(|col| {
-                let index = col - col_lower_bound;
-                if let Some(cell) = &header[index] {
-                    let value = if cell.kind == CellType::SharedString {
-                        let id = cell.value.parse::<usize>().expect("Shared string index");
-                        let index = mappings[&id];
-                        shared_strings[index].to_owned()
-                    } else {
-                        cell.to_string()
-                    };
-                    if !criteria.nulls.contains(&value) {
-                        value
-                    } else {
-                        index_to_col(col).to_owned()
-                    }
-                } else {
-                    index_to_col(col).to_owned()
-                }
-            }).collect::<Vec<_>>();
-
-            let columns = names.iter().zip(data)
-                .map(|(name, cells)| {
-                    let types = cells.iter()
-                        .map(|cell| {
-                            if cell.kind == CellType::SharedString {
-                                let id = cell.value.parse::<usize>().expect("Shared string index");
-                                let index = mappings[&id];
-                                let value = shared_strings[index].as_str();
-                                ColumnType::from(if criteria.nulls.contains(value) {
-                                    &CellType::Empty
-                                } else {
-                                    &cell.kind
-                                }, value)
-                            } else {
-                                ColumnType::from(&cell.kind, &cell.value)
-                            }
+        let file_name = self.name();
+        for (sheet_name, header, data, row_lower_bound, col_lower_bound, col_upper_bound) in sheets.into_iter() {
+            let names = (col_lower_bound..=col_upper_bound)
+                .map(|col| -> Result<String, RustySheetError> {
+                    let index = col - col_lower_bound;
+                    if let Some(cell) = &header[index] {
+                        let value = if cell.kind == CellType::SharedString {
+                            resolve_shared_string(
+                                &shared_strings,
+                                &mappings,
+                                &file_name,
+                                &sheet_name,
+                                cell,
+                            )?.to_owned()
+                        } else {
+                            cell.to_display_string().map_err(|message| {
+                                SpreadsheetError::CellValueError(
+                                    file_name.to_owned(),
+                                    sheet_name.to_owned(),
+                                    cell.reference(),
+                                    message,
+                                )
+                            })?
+                        };
+                        Ok(if !criteria.nulls.contains(&value) {
+                            value
+                        } else {
+                            index_to_col(col).to_owned()
                         })
-                        .collect::<Vec<_>>();
-                    Column {
-                        name: name.to_owned(),
-                        kind: presets.iter()
-                            .find(|(pattern, _)| pattern.matches(name))
-                            .map(|(_, kind)| kind.to_owned())
-                            .unwrap_or(ColumnType::detect(types)),
+                    } else {
+                        Ok(index_to_col(col).to_owned())
                     }
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let columns = names.iter().zip(data)
+                .map(|(column_name, cells)| -> Result<Column, RustySheetError> {
+                    let types = cells.iter()
+                        .map(|cell| -> Result<Option<ColumnType>, RustySheetError> {
+                            if cell.kind == CellType::SharedString {
+                                let value = resolve_shared_string(
+                                    &shared_strings,
+                                    &mappings,
+                                    &file_name,
+                                    &sheet_name,
+                                    cell,
+                                )?;
+                                Ok(ColumnType::from(
+                                    if criteria.nulls.contains(value) {
+                                        &CellType::Empty
+                                    } else {
+                                        &cell.kind
+                                    },
+                                    value,
+                                ))
+                            } else {
+                                Ok(ColumnType::from(&cell.kind, &cell.value))
+                            }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Column {
+                        name: column_name.to_owned(),
+                        kind: presets
+                            .iter()
+                            .find(|(pattern, _)| pattern.matches(column_name))
+                            .map(|(_, kind)| kind.to_owned())
+                            .unwrap_or(ColumnType::detect(types)),
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             tables.push(Table {
-                name,
+                name: sheet_name,
                 columns,
                 row_lower_bound,
                 col_lower_bound,

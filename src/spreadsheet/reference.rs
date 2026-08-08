@@ -1,3 +1,6 @@
+const MAX_COL_INDEX: usize = 16_383;
+const MAX_ROW_NUMBER: usize = 1_048_576;
+
 /// Converts a zero-based column index to Excel column letter notation
 ///
 /// Uses a precomputed lookup table for optimal performance. Supports
@@ -44,40 +47,12 @@ pub(crate) fn col_to_index(letters: &str) -> Option<usize> {
     let mut column = 0usize;
     for char in letters.chars() {
         if 'A' <= char && char <= 'Z' {
-            column = column * 26 + char as usize - 64;
+            column = column.checked_mul(26)?.checked_add(char as usize - 64)?;
         } else {
             break;
         }
     }
-    if column > 0 {
-        Some(column - 1)
-    } else {
-        None
-    }
-}
-
-/// Converts a zero-based row index to Excel row number string
-///
-/// Transforms internal zero-based row indexing into Excel's 1-based row numbering system.
-/// This conversion bridges the gap between internal storage (0-based) and Excel's
-/// user-facing representation (1-based).
-///
-/// The conversion is straightforward: adds 1 to the zero-based index and converts
-/// the result to a string. This maintains compatibility with Excel's row numbering
-/// convention while using efficient zero-based indexing internally.
-///
-/// # Arguments
-/// * `index` - Zero-based row index (0 = row 1, 1 = row 2, etc.)
-///
-/// # Returns
-/// Excel-style row number as a string (1-based)
-///
-/// # Examples
-/// - 0 -> "1"      // First row
-/// - 1 -> "2"      // Second row
-/// - 99 -> "100"   // 100th row
-pub(crate) fn index_to_row(index: usize) -> String {
-    (index + 1).to_string()
+    zero_based_column(column)
 }
 
 /// Converts an Excel row number string to a zero-based row index
@@ -89,22 +64,25 @@ pub(crate) fn index_to_row(index: usize) -> String {
 /// `Some(usize)` containing the zero-based row index if valid,
 /// `None` if the input cannot be parsed as a valid row number
 pub(crate) fn row_to_index(row: &str) -> Option<usize> {
-    row.parse::<usize>().ok().map(|row| row - 1)
+    row.parse::<usize>().ok().and_then(zero_based_row)
 }
 
-/// Converts zero-based row and column indices to an Excel-style cell reference
+/// Converts zero-based row and column indices to a cell reference
 ///
 /// # Arguments
 /// * `row_index` - Zero-based row index (0 = row 1)
 /// * `col_index` - Zero-based column index (0 = column "A")
 ///
 /// # Returns
-/// Excel-style cell reference as a string (e.g., "A1", "B2", "AB100")
+/// A1 notation for valid Excel coordinates, or R1C1 notation for out-of-range
+/// coordinates so malformed-file error reporting remains panic-free.
 pub(crate) fn index_to_reference(row_index: usize, col_index: usize) -> String {
-    let mut reference = String::new();
-    reference.push_str(index_to_col(col_index));
-    reference.push_str(&index_to_row(row_index));
-    reference
+    let row_number = row_index.saturating_add(1);
+    if let Some(column) = INDEXES_TO_COLUMNS.get(col_index) {
+        format!("{column}{row_number}")
+    } else {
+        format!("R{row_number}C{}", col_index.saturating_add(1))
+    }
 }
 
 /// Converts an Excel-style cell reference to zero-based row and column indices
@@ -135,17 +113,32 @@ pub(crate) fn index_to_reference(row_index: usize, col_index: usize) -> String {
 pub(crate) fn reference_to_index(letters: &str) -> Option<(usize, usize)> {
     let mut column = 0usize;
     let mut row = 0usize;
+    let mut row_started = false;
     for char in letters.chars() {
-        if 'A' <= char && char <= 'Z' {
-            column = column * 26 + char as usize - 64;
+        if 'A' <= char && char <= 'Z' && !row_started {
+            column = column.checked_mul(26)?.checked_add(char as usize - 64)?;
         } else if '0' <= char && char <= '9' {
-            row = row * 10 + char as usize - 48;
+            row_started = true;
+            row = row.checked_mul(10)?.checked_add(char as usize - 48)?;
         } else {
-            break;
+            return None;
         }
     }
-    if column > 0 {
-        Some((row - 1, column - 1))
+    Some((zero_based_row(row)?, zero_based_column(column)?))
+}
+
+fn zero_based_column(column: usize) -> Option<usize> {
+    let index = column.checked_sub(1)?;
+    if index <= MAX_COL_INDEX {
+        Some(index)
+    } else {
+        None
+    }
+}
+
+fn zero_based_row(row: usize) -> Option<usize> {
+    if (1..=MAX_ROW_NUMBER).contains(&row) {
+        Some(row - 1)
     } else {
         None
     }
@@ -1419,3 +1412,25 @@ const INDEXES_TO_COLUMNS: [&'static str; 16384] = [
     "XEF", "XEG", "XEH", "XEI", "XEJ", "XEK", "XEL", "XEM", "XEN", "XEO", "XEP", "XEQ", "XER",
     "XES", "XET", "XEU", "XEV", "XEW", "XEX", "XEY", "XEZ", "XFA", "XFB", "XFC", "XFD",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_reference_bounds() {
+        assert_eq!(col_to_index("XFD"), Some(16_383));
+        assert_eq!(row_to_index("1048576"), Some(1_048_575));
+        assert_eq!(reference_to_index("XFD1048576"), Some((1_048_575, 16_383)));
+    }
+
+    #[test]
+    fn rejects_out_of_bounds_references() {
+        assert_eq!(col_to_index("XFE"), None);
+        assert_eq!(row_to_index("0"), None);
+        assert_eq!(row_to_index("1048577"), None);
+        assert_eq!(reference_to_index("A0"), None);
+        assert_eq!(reference_to_index("XFE1"), None);
+        assert_eq!(reference_to_index("A1048577"), None);
+    }
+}
