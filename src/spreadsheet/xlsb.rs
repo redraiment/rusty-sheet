@@ -10,6 +10,7 @@ use crate::spreadsheet::criteria::Criteria;
 use crate::spreadsheet::excel;
 use crate::spreadsheet::excel::load_relationships;
 use crate::spreadsheet::reference::index_to_reference;
+use crate::spreadsheet::resolve_number_format;
 use crate::spreadsheet::sheet::Sheet;
 use crate::spreadsheet::Spreadsheet;
 use crate::spreadsheet::SpreadsheetError;
@@ -221,7 +222,14 @@ impl Spreadsheet for XlsbSpreadsheet {
                             };
                             let kind = match either {
                                 Either::Left(kind) => kind,
-                                Either::Right(index) => (self.number_formats)[index],
+                                Either::Right(index) => resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?,
                             };
                             if kind != CellType::Error {
                                 if !criteria.nulls.contains(&value) {
