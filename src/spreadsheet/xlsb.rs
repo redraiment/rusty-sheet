@@ -10,6 +10,7 @@ use crate::spreadsheet::criteria::Criteria;
 use crate::spreadsheet::excel;
 use crate::spreadsheet::excel::load_relationships;
 use crate::spreadsheet::reference::index_to_reference;
+use crate::spreadsheet::resolve_number_format;
 use crate::spreadsheet::sheet::Sheet;
 use crate::spreadsheet::Spreadsheet;
 use crate::spreadsheet::SpreadsheetError;
@@ -134,7 +135,7 @@ impl Spreadsheet for XlsbSpreadsheet {
         };
 
         reader.find(BRT_BEGIN_SST)?;
-        for id in 0..reader.get_usize(4) {
+        for id in 0..reader.get_usize(4)? {
             reader.find_with(BRT_SST_ITEM, &[(BRT_FRT_BEGIN, BRT_FRT_END)])?;
             if let Some(keys) = &mut indexes {
                 if keys.contains(&id) {
@@ -189,7 +190,7 @@ impl Spreadsheet for XlsbSpreadsheet {
                 match tag {
                     BRT_END_SHEET_DATA => break,
                     BRT_ROW_HDR => {
-                        row = reader.get_usize(0);
+                        row = reader.get_usize(0)?;
                         if sheet.after_row_upper_bound(row) {
                             break;
                         }
@@ -202,7 +203,7 @@ impl Spreadsheet for XlsbSpreadsheet {
                     | BRT_CELL_ISST
                     | BRT_CELL_ERROR | BRT_FMLA_ERROR
                     if !sheet.before_row_lower_bound(row) => {
-                        let col = reader.get_usize(0);
+                        let col = reader.get_usize(0)?;
                         if sheet.contains(row, col) {
                             if let Some(last_row) = last_row {
                                 if criteria.end_at_empty_row && ((sheet.is_empty() && last_row != row) || (!sheet.is_empty() && last_row + 1 < row)) {
@@ -211,17 +212,24 @@ impl Spreadsheet for XlsbSpreadsheet {
                             }
                             last_row = Some(row);
                             let (either, value) = match tag {
-                                BRT_CELL_BOOL | BRT_FMLA_BOOL => read_bool_cell(&mut reader),
-                                BRT_CELL_REAL | BRT_FMLA_NUM => read_real_cell(&mut reader),
+                                BRT_CELL_BOOL | BRT_FMLA_BOOL => read_bool_cell(&mut reader)?,
+                                BRT_CELL_REAL | BRT_FMLA_NUM => read_real_cell(&mut reader)?,
                                 BRT_CELL_ST | BRT_FMLA_STRING => read_st_cell(&mut reader)?,
                                 BRT_CELL_R_STRING => read_rich_string_cell(&mut reader)?,
-                                BRT_CELL_ISST => read_shared_string_cell(&mut reader),
-                                BRT_CELL_ERROR | BRT_FMLA_ERROR => read_error_cell(&mut reader),
-                                _ => read_rk_cell(&mut reader),
+                                BRT_CELL_ISST => read_shared_string_cell(&mut reader)?,
+                                BRT_CELL_ERROR | BRT_FMLA_ERROR => read_error_cell(&mut reader)?,
+                                _ => read_rk_cell(&mut reader)?,
                             };
                             let kind = match either {
                                 Either::Left(kind) => kind,
-                                Either::Right(index) => (self.number_formats)[index],
+                                Either::Right(index) => resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?,
                             };
                             if kind != CellType::Error {
                                 if !criteria.nulls.contains(&value) {
@@ -282,7 +290,7 @@ fn load_workbook(zip: &mut ZipArchive<UnifiedReader>) -> Result<(Vec<(String, St
             }
         }
         BRT_WB_PROP => {
-            is_1904 = (&reader.buffer[0] & 0x1) != 0;
+            is_1904 = (reader.get_u8(0)? & 0x1) != 0;
         }
     });
     Ok((sheets, is_1904))
@@ -309,9 +317,9 @@ fn load_number_formats(zip: &mut ZipArchive<UnifiedReader>, is_1904: bool) -> Re
     let mut format_indexes: Vec<String> = Vec::new();
     match_biff12_record!(reader => {
         BRT_BEGIN_FMTS => {
-            for _ in 0..reader.get_usize(0) {
+            for _ in 0..reader.get_usize(0)? {
                 reader.find(BRT_FMT)?;
-                let id = reader.get_u16(0);
+                let id = reader.get_u16(0)?;
                 let format = reader.get_str(2)?;
                 custom_formats.insert(
                     id.to_string(),
@@ -320,9 +328,9 @@ fn load_number_formats(zip: &mut ZipArchive<UnifiedReader>, is_1904: bool) -> Re
             }
         }
         BRT_BEGIN_CELL_XFS => {
-            for _ in 0..reader.get_usize(0) {
+            for _ in 0..reader.get_usize(0)? {
                 reader.find(BRT_XF)?;
-                let id = reader.get_u16(2);
+                let id = reader.get_u16(2)?;
                 format_indexes.push(id.to_string());
             }
             break;
@@ -341,9 +349,11 @@ fn load_number_formats(zip: &mut ZipArchive<UnifiedReader>, is_1904: bool) -> Re
 /// * `(Either<CellType, usize>, String)` - Tuple containing:
 ///   - Cell type (boolean) and format index
 ///   - String representation of boolean value ("1" or "0")
-fn read_bool_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> (Either<CellType, usize>, String) {
-    let value = if reader.buffer[8] != 0 { "1" } else { "0" };
-    (Either::Left(CellType::Boolean), value.to_owned())
+fn read_bool_cell(
+    reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>,
+) -> Result<(Either<CellType, usize>, String), RustySheetError> {
+    let value = if reader.get_u8(8)? != 0 { "1" } else { "0" };
+    Ok((Either::Left(CellType::Boolean), value.to_owned()))
 }
 
 /// Reads a real number (double precision) cell value from BIFF12 data
@@ -355,10 +365,12 @@ fn read_bool_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) 
 /// * `(Either<CellType, usize>, String)` - Tuple containing:
 ///   - Format index reference and cell type
 ///   - String representation of numeric value
-fn read_real_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> (Either<CellType, usize>, String) {
-    let index = reader.get_style(4);
-    let value = reader.get_f64(8).to_string();
-    (Either::Right(index), value)
+fn read_real_cell(
+    reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>,
+) -> Result<(Either<CellType, usize>, String), RustySheetError> {
+    let index = reader.get_style(4)?;
+    let value = reader.get_f64(8)?.to_string();
+    Ok((Either::Right(index), value))
 }
 
 /// Reads an inline string cell value from BIFF12 data
@@ -398,9 +410,11 @@ fn read_rich_string_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedRead
 /// * `(Either<CellType, usize>, String)` - Tuple containing:
 ///   - Cell type (shared string) and format index
 ///   - String representation of shared string index
-fn read_shared_string_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> (Either<CellType, usize>, String) {
-    let value = reader.get_usize(8).to_string();
-    (Either::Left(CellType::SharedString), value)
+fn read_shared_string_cell(
+    reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>,
+) -> Result<(Either<CellType, usize>, String), RustySheetError> {
+    let value = reader.get_usize(8)?.to_string();
+    Ok((Either::Left(CellType::SharedString), value))
 }
 
 /// Reads an error cell value from BIFF12 data
@@ -412,9 +426,11 @@ fn read_shared_string_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedRe
 /// * `(Either<CellType, usize>, String)` - Tuple containing:
 ///   - Cell type (error) and format index
 ///   - String representation of error value
-fn read_error_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> (Either<CellType, usize>, String) {
-    let value = to_error_value(reader.buffer[8]).to_owned();
-    (Either::Left(CellType::Error), value)
+fn read_error_cell(
+    reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>,
+) -> Result<(Either<CellType, usize>, String), RustySheetError> {
+    let value = to_error_value(reader.get_u8(8)?).to_owned();
+    Ok((Either::Left(CellType::Error), value))
 }
 
 /// Reads an RK (compressed floating point) cell value from BIFF12 data
@@ -429,16 +445,19 @@ fn read_error_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>)
 /// * `(Either<CellType, usize>, String)` - Tuple containing:
 ///   - Format index reference and cell type
 ///   - String representation of decompressed numeric value
-fn read_rk_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) -> (Either<CellType, usize>, String) {
-    let index = reader.get_style(4);
-    let is_percentage = (reader.buffer[8] & 0x01) != 0;
-    let is_integer = (reader.buffer[8] & 0x02) != 0;
-    reader.buffer[8] &= 0xFC; // Clear A and B flag bits
+fn read_rk_cell(
+    reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>,
+) -> Result<(Either<CellType, usize>, String), RustySheetError> {
+    let index = reader.get_style(4)?;
+    let flags = reader.get_u8(8)?;
+    let is_percentage = (flags & 0x01) != 0;
+    let is_integer = (flags & 0x02) != 0;
+    reader.buffer[8] = flags & 0xFC; // Clear A and B flag bits
 
     let mut value = if is_integer {
-        (reader.get_i32(8) >> 2) as f64
+        (reader.get_i32(8)? >> 2) as f64
     } else {
-        let value = (reader.get_u32(8) >> 2) as u64;
+        let value = (reader.get_u32(8)? >> 2) as u64;
         f64::from_bits(value << 34)
     };
     if is_percentage {
@@ -450,5 +469,5 @@ fn read_rk_cell(reader: &mut Biff12Reader<BufReader<ZipFile<UnifiedReader>>>) ->
         value.to_string()
     };
 
-    (Either::Right(index), value)
- }
+    Ok((Either::Right(index), value))
+}

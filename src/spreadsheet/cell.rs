@@ -243,76 +243,36 @@ impl Cell {
             _ => Err(format!("parse '{}' to datetime failed", self.value))?,
         }
     }
-}
 
-impl Display for Cell {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self.kind {
-            CellType::Boolean => if self.value == "1" { "true" } else { "false" }.to_owned(),
-            CellType::NumberDateTime1900 => {
-                if let Ok(value) = to_datetime_string(&self.value, false) {
-                    value
-                } else {
-                    panic!(
-                        "Parse cell value '{}' at {} to DateTime(1900) failed",
-                        self.value,
-                        self.reference()
-                    );
-                }
-            }
-            CellType::NumberDate1900 => {
-                if let Ok(value) = to_date_string(&self.value, false) {
-                    value
-                } else {
-                    panic!(
-                        "Parse cell value '{}' at {} to Date(1900) failed",
-                        self.value,
-                        self.reference()
-                    );
-                }
-            }
-            CellType::NumberDateTime1904 => {
-                if let Ok(value) = to_datetime_string(&self.value, true) {
-                    value
-                } else {
-                    panic!(
-                        "Parse cell value '{}' at {} to DateTime(1904) failed",
-                        self.value,
-                        self.reference()
-                    );
-                }
-            }
-            CellType::NumberDate1904 => {
-                if let Ok(value) = to_date_string(&self.value, true) {
-                    value
-                } else {
-                    panic!(
-                        "Parse cell value '{}' at {} to Date(1904) failed",
-                        self.value,
-                        self.reference()
-                    );
-                }
-            }
-            CellType::NumberTime1900 | CellType::NumberTime1904 => {
-                if let Ok(value) = to_time_string(&self.value) {
-                    value
-                } else {
-                    panic!(
-                        "Parse cell value '{}' at {} to Time failed",
-                        self.value,
-                        self.reference()
-                    );
-                }
-            }
-            CellType::IsoDateTime => self.value.replace("T", " "),
-            CellType::IsoDuration => self
+    /// Converts the cell to the user-visible string representation.
+    pub(crate) fn to_display_string(&self) -> Result<String, String> {
+        match self.kind {
+            CellType::Boolean => Ok(if self.value == "1" { "true" } else { "false" }.to_owned()),
+            CellType::NumberDateTime1900 => to_datetime_string(&self.value, false)
+                .map_err(|_| format!("parse '{}' to DateTime(1900) failed", self.value)),
+            CellType::NumberDate1900 => to_date_string(&self.value, false)
+                .map_err(|_| format!("parse '{}' to Date(1900) failed", self.value)),
+            CellType::NumberDateTime1904 => to_datetime_string(&self.value, true)
+                .map_err(|_| format!("parse '{}' to DateTime(1904) failed", self.value)),
+            CellType::NumberDate1904 => to_date_string(&self.value, true)
+                .map_err(|_| format!("parse '{}' to Date(1904) failed", self.value)),
+            CellType::NumberTime1900 | CellType::NumberTime1904 => to_time_string(&self.value)
+                .map_err(|_| format!("parse '{}' to Time failed", self.value)),
+            CellType::IsoDateTime => Ok(self.value.replace("T", " ")),
+            CellType::IsoDuration => Ok(self
                 .value
                 .replace("PT", "")
                 .replace("H", ":")
                 .replace("M", ":")
-                .replace("S", ""),
-            _ => self.value.to_owned(),
-        };
+                .replace("S", "")),
+            _ => Ok(self.value.to_owned()),
+        }
+    }
+}
+
+impl Display for Cell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = self.to_display_string().unwrap_or_else(|_| self.value.to_owned());
         write!(f, "{}", value)
     }
 }

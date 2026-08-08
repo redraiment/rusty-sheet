@@ -10,6 +10,7 @@ use crate::spreadsheet::cell::CellType;
 use crate::spreadsheet::criteria::Criteria;
 use crate::spreadsheet::excel::load_number_formats;
 use crate::spreadsheet::reference::index_to_reference;
+use crate::spreadsheet::resolve_number_format;
 use crate::spreadsheet::sheet::Sheet;
 use crate::spreadsheet::Spreadsheet;
 use crate::spreadsheet::SpreadsheetError;
@@ -201,7 +202,14 @@ impl Spreadsheet for XlsSpreadsheet {
                                 }
                                 last_row = Some(row);
                                 let index = self.reader.read_u16()? as usize;
-                                let kind = self.number_formats[index];
+                                let kind = resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?;
                                 let value = self.reader.read_rk_number()?;
                                 sheet.push(Cell {
                                     row,
@@ -234,7 +242,14 @@ impl Spreadsheet for XlsSpreadsheet {
                             };
                             let kind = match either {
                                 Either::Left(kind) => kind,
-                                Either::Right(index) => self.number_formats[index],
+                                Either::Right(index) => resolve_number_format(
+                                    &self.number_formats,
+                                    &sheet.file_name,
+                                    &sheet.name,
+                                    row,
+                                    col,
+                                    index,
+                                )?,
                             };
                             if kind != CellType::Error {
                                 if !criteria.nulls.contains(&value) {

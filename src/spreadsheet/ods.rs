@@ -1,6 +1,7 @@
 use crate::error::RustySheetError;
 use crate::helpers::reader::UnifiedReader;
 use crate::helpers::xml::XmlNodeHelper;
+use crate::helpers::xml::XmlReader;
 use crate::helpers::xml::XmlTextContextHelper;
 use crate::helpers::zip::ZipHelper;
 use crate::match_xml_events;
@@ -15,8 +16,10 @@ use quick_xml::events::Event;
 use quick_xml::name::QName;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io::BufReader;
 use std::io::Read;
 use thiserror::Error;
+use zip::read::ZipFile;
 use zip::ZipArchive;
 
 /// ODS file MIME type identifier
@@ -111,14 +114,14 @@ impl Spreadsheet for OdsSpreadsheet {
         let mut sheets = Vec::<Sheet>::new();
         let mut sheet_count = 0usize;
         let mut sheet_name = String::new();
-        let mut reader = self.zip
-            .xml_reader("content.xml")?
-            .expect("content.xml");
+        let mut reader = required_xml_reader(&mut self.zip, "content.xml")?;
         'sheets: loop {
             match_xml_events!(reader => {
                 Event::End(event) if event.name() == SPREADSHEET => break 'sheets,
                 Event::Start(event) if event.name() == TABLE => {
-                    let table_name = event.get_attribute_value("table:name")?.expect("Sheet name");
+                    let table_name = event
+                        .get_attribute_value("table:name")?
+                        .ok_or_else(|| SpreadsheetError::FileError("content.xml".to_string()))?;
                     sheet_name.clear();
                     sheet_name.push_str(&table_name);
                     if criteria.sheet_limit.map(|limit| sheet_count >= limit).unwrap_or(false) {
@@ -298,9 +301,7 @@ fn check_mime(zip: &mut ZipArchive<UnifiedReader>) -> Result<(), RustySheetError
 /// # Returns
 /// * `Result<bool, RustySheetError>` - True if password protected, false otherwise
 fn is_password_protected(zip: &mut ZipArchive<UnifiedReader>) -> Result<bool, RustySheetError> {
-    let mut reader = zip
-        .xml_reader("META-INF/manifest.xml")?
-        .expect("META-INF/manifest.xml");
+    let mut reader = required_xml_reader(zip, "META-INF/manifest.xml")?;
     let mut in_file_entry = false;
     match_xml_events!(reader => {
         Event::Start(event) if event.name() == QName(b"manifest:file-entry") => in_file_entry = true,
@@ -309,4 +310,141 @@ fn is_password_protected(zip: &mut ZipArchive<UnifiedReader>) -> Result<bool, Ru
         }
     });
     Ok(false)
+}
+
+fn required_xml_reader<'a>(
+    zip: &'a mut ZipArchive<UnifiedReader>,
+    path: &str,
+) -> Result<XmlReader<BufReader<ZipFile<'a, UnifiedReader>>>, RustySheetError> {
+    zip.xml_reader(path)?.ok_or_else(|| {
+        RustySheetError::from(SpreadsheetError::FileError(path.to_string()))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spreadsheet::criteria::Criteria;
+    use std::collections::HashSet;
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    #[test]
+    fn missing_manifest_xml_returns_error() {
+        let path = ods_path("missing-manifest");
+        write_ods(&path, false, Some(valid_content_xml()));
+
+        let result = OdsSpreadsheet::open(path.to_str().unwrap());
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected missing manifest XML error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("META-INF/manifest.xml"));
+        assert!(error.contains("missing or corrupted"));
+    }
+
+    #[test]
+    fn missing_content_xml_returns_error() {
+        let path = ods_path("missing-content");
+        write_ods(&path, true, None);
+
+        let mut spreadsheet = OdsSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.read_sheets(&default_criteria());
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected missing content XML error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("content.xml"));
+        assert!(error.contains("missing or corrupted"));
+    }
+
+    #[test]
+    fn missing_table_name_returns_error() {
+        let path = ods_path("missing-table-name");
+        write_ods(&path, true, Some(unnamed_table_content_xml()));
+
+        let mut spreadsheet = OdsSpreadsheet::open(path.to_str().unwrap()).unwrap();
+        let result = spreadsheet.read_sheets(&default_criteria());
+
+        std::fs::remove_file(path).unwrap();
+        let error = match result {
+            Ok(_) => panic!("expected missing table name error"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("content.xml"));
+        assert!(error.contains("missing or corrupted"));
+    }
+
+    fn default_criteria() -> Criteria {
+        Criteria {
+            sheet_name_patterns: None,
+            sheet_limit: None,
+            range: None,
+            rows_limit: None,
+            nulls: HashSet::from(["".to_string()]),
+            error_as_null: false,
+            skip_empty_rows: false,
+            end_at_empty_row: false,
+            spread_merged_cells: false,
+        }
+    }
+
+    fn ods_path(kind: &str) -> PathBuf {
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("rusty-sheet-invalid-{kind}-{id}.ods"))
+    }
+
+    fn write_ods(path: &Path, include_manifest: bool, content_xml: Option<&str>) {
+        let file = File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        zip.start_file("mimetype", options).unwrap();
+        zip.write_all(MIME_TYPE).unwrap();
+
+        if include_manifest {
+            zip.start_file("META-INF/manifest.xml", options).unwrap();
+            zip.write_all(manifest_xml().as_bytes()).unwrap();
+        }
+        if let Some(content_xml) = content_xml {
+            zip.start_file("content.xml", options).unwrap();
+            zip.write_all(content_xml.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn manifest_xml() -> &'static str {
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
+  <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/>
+</manifest:manifest>"#
+    }
+
+    fn valid_content_xml() -> &'static str {
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
+  <office:body><office:spreadsheet><table:table table:name="Sheet1"/></office:spreadsheet></office:body>
+</office:document-content>"#
+    }
+
+    fn unnamed_table_content_xml() -> &'static str {
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
+  <office:body><office:spreadsheet><table:table/></office:spreadsheet></office:body>
+</office:document-content>"#
+    }
 }
